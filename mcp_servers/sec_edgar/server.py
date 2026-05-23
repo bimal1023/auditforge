@@ -282,14 +282,23 @@ async def get_filing_text(
             }
 
         except httpx.HTTPStatusError as exc:
+            import logging as _log
+            _log.getLogger(__name__).warning(
+                "SEC EDGAR HTTP %s fetching %s/%s",
+                exc.response.status_code, cik_padded, acc_dashed,
+            )
             return {
-                "error": f"HTTP {exc.response.status_code}: {exc.request.url}",
+                "error": f"SEC EDGAR returned HTTP {exc.response.status_code}",
                 "cik": cik_padded,
                 "accession_number": acc_dashed,
             }
         except Exception as exc:
+            import logging as _log
+            _log.getLogger(__name__).exception(
+                "SEC EDGAR unexpected error for %s/%s", cik_padded, acc_dashed,
+            )
             return {
-                "error": str(exc),
+                "error": "Failed to retrieve filing — see server logs",
                 "cik": cik_padded,
                 "accession_number": acc_dashed,
             }

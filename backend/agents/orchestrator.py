@@ -104,54 +104,69 @@ class Orchestrator:
                 await asyncio.sleep(self._inter_delay)
 
             label = _AGENT_LABELS.get(key, key)
-            self._emit("agent_start", f"{label}: fetching data…", agent=key)
 
-            try:
-                coro = agent.run(
-                    request.company_name,
-                    ticker=request.ticker,
-                    context=request.context,
-                )
-                if self._timeout:
-                    result = await asyncio.wait_for(coro, timeout=self._timeout)
-                else:
-                    result = await coro
-
-                # Discard fallback sections — they contain no real data and
-                # would mislead the synthesis and the user.
-                if _is_fallback(result):
-                    logger.warning(
-                        "Specialist %s returned a fallback section (confidence=0); discarding",
-                        key,
+            # One overload retry per agent — wait 90s then try once more
+            for attempt in range(2):
+                self._emit("agent_start", f"{label}: fetching data…", agent=key)
+                try:
+                    coro = agent.run(
+                        request.company_name,
+                        ticker=request.ticker,
+                        context=request.context,
                     )
+                    if self._timeout:
+                        result = await asyncio.wait_for(coro, timeout=self._timeout)
+                    else:
+                        result = await coro
+
+                    if _is_fallback(result):
+                        logger.warning(
+                            "Specialist %s returned a fallback section (confidence=0); discarding",
+                            key,
+                        )
+                        self._emit(
+                            "agent_fail",
+                            f"{label}: could not extract data from filings",
+                            agent=key,
+                        )
+                    else:
+                        setattr(report, key, result)
+                        conf = getattr(result, "confidence_score", None)
+                        self._emit(
+                            "agent_done",
+                            f"{label}: complete",
+                            agent=key,
+                            confidence=round(conf, 2) if conf is not None else None,
+                        )
+                        logger.info("Specialist %s OK (confidence=%.2f)", key, conf or 0)
+                    break  # success or fallback — don't retry
+
+                except asyncio.TimeoutError:
+                    logger.warning("Specialist %s timed out after %ds", key, self._timeout)
+                    self._emit("agent_fail", f"{label}: timed out", agent=key, reason="timeout")
+                    break
+
+                except Exception as exc:
+                    if attempt == 0 and _is_overloaded(exc):
+                        wait = 90
+                        logger.warning("Specialist %s overloaded — retrying in %ds", key, wait)
+                        self._emit(
+                            "status",
+                            f"{label}: API overloaded, retrying in {wait}s…",
+                            agent=key,
+                        )
+                        await asyncio.sleep(wait)
+                        # Re-instantiate the agent so MCP connections are fresh
+                        agent = type(agent)()
+                        continue
+                    logger.error("Specialist %s failed: %r", key, exc, exc_info=True)
                     self._emit(
                         "agent_fail",
-                        f"{label}: could not extract data from filings",
+                        f"{label}: {_friendly_error(exc)}",
                         agent=key,
+                        reason=type(exc).__name__,
                     )
-                else:
-                    setattr(report, key, result)
-                    conf = getattr(result, "confidence_score", None)
-                    self._emit(
-                        "agent_done",
-                        f"{label}: complete",
-                        agent=key,
-                        confidence=round(conf, 2) if conf is not None else None,
-                    )
-                    logger.info("Specialist %s OK (confidence=%.2f)", key, conf or 0)
-
-            except asyncio.TimeoutError:
-                logger.warning("Specialist %s timed out after %ds", key, self._timeout)
-                self._emit("agent_fail", f"{label}: timed out", agent=key, reason="timeout")
-
-            except Exception as exc:
-                logger.error("Specialist %s failed: %r", key, exc, exc_info=True)
-                self._emit(
-                    "agent_fail",
-                    f"{label}: {_friendly_error(exc)}",
-                    agent=key,
-                    reason=type(exc).__name__,
-                )
+                    break
 
         # ── Synthesis ──────────────────────────────────────────────────────
         self._emit("status", "Synthesising findings…")
@@ -174,7 +189,6 @@ class Orchestrator:
             logger.warning("Synthesis failed: %s", exc)
 
         report.status = "complete"
-        self._emit("complete", "Report complete.", report_id=self._report_id)
         return report
 
 
@@ -189,9 +203,22 @@ def _is_fallback(section: Any) -> bool:
     return confidence == 0.0 and "failed" in summary.lower()
 
 
+def _is_overloaded(exc: Exception) -> bool:
+    """True if the exception (or any sub-exception) is a 529 OverloadedError."""
+    from anthropic import OverloadedError
+    if isinstance(exc, OverloadedError):
+        return True
+    # anyio wraps the error in an ExceptionGroup on teardown
+    if isinstance(exc, BaseExceptionGroup):
+        return any(_is_overloaded(e) for e in exc.exceptions)
+    return False
+
+
 def _friendly_error(exc: Exception) -> str:
     """Return a short, user-safe error description without internal details."""
     name = type(exc).__name__
+    if _is_overloaded(exc):
+        return "API overloaded after retries — partial report"
     if "RateLimit" in name:
         return "rate limit reached — will retry on next run"
     if "Timeout" in name:

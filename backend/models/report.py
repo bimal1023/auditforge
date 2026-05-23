@@ -163,9 +163,13 @@ class ReportRequest(BaseModel):
     ticker: Optional[str] = None
     focus_areas: list[str] = ["financial", "risk", "market", "legal"]
     context: Optional[str] = None   # any extra PE context to pass to agents
+    force_refresh: bool = False     # bypass response cache and run fresh agents
 
 
 class ReportStatusResponse(BaseModel):
     id: UUID
     status: str
     company: str
+    ticker: Optional[str] = None
+    overall_score: Optional[float] = None
+    generated_at: Optional[datetime] = None

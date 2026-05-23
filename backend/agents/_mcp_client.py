@@ -78,12 +78,25 @@ class MCPClient:
         return self
 
     async def __aexit__(self, *exc: Any) -> None:
-        if self._session:
-            await self._session.__aexit__(*exc)
-        if self._cm:
-            await self._cm.__aexit__(*exc)
-        if self._errlog:
-            self._errlog.close()
+        # Suppress anyio "cancel scope in different task" RuntimeErrors that
+        # surface when Celery's forked worker tears down the event loop while
+        # an exception is still propagating through an anyio task group.
+        try:
+            if self._session:
+                try:
+                    await self._session.__aexit__(*exc)
+                except Exception:
+                    pass
+        finally:
+            try:
+                if self._cm:
+                    try:
+                        await self._cm.__aexit__(*exc)
+                    except Exception:
+                        pass
+            finally:
+                if self._errlog:
+                    self._errlog.close()
 
     # ------------------------------------------------------------------
     # Anthropic integration helpers

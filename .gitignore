@@ -28,6 +28,10 @@ frontend/.env
 frontend/.env.*
 !frontend/.env.example
 
+# ── Portfolio / generated files ───────────────────────────────────────────────
+AuditForge_Portfolio.pdf
+generate_portfolio_pdf.py
+
 # ── OS & editor ───────────────────────────────────────────────────────────────
 .DS_Store
 Thumbs.db
@@ -35,6 +39,12 @@ Thumbs.db
 .vscode/
 *.swp
 *.swo
+
+# ── Claude Code ───────────────────────────────────────────────────────────────
+.claude/
+
+# ── TypeScript build cache ────────────────────────────────────────────────────
+frontend/tsconfig.tsbuildinfo
 
 # ── Docker ────────────────────────────────────────────────────────────────────
 infra/.env

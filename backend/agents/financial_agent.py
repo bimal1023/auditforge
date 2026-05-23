@@ -25,6 +25,7 @@ from typing import Any
 import anthropic
 
 from backend.core.config import get_settings
+from backend.agents._prompt_cache import cached_system, PROMPT_CACHE_HEADERS
 from backend.hooks.base import HookContext
 from backend.hooks.audit_logging import AuditLoggingHook
 from backend.hooks.input_normalization import InputNormalizationHook
@@ -148,7 +149,7 @@ class FinancialAgent:
         if ticker_norm:
             user_msg += f" (ticker: {ticker_norm})"
         if context_norm:
-            user_msg += f"\n\nAdditional context: {context_norm}"
+            user_msg += f"\n\n<analyst_context>\n{context_norm}\n</analyst_context>"
 
         messages: list[dict[str, Any]] = [{"role": "user", "content": user_msg}]
         final_text: str = ""
@@ -163,9 +164,10 @@ class FinancialAgent:
                 response = await self._client.messages.create(
                     model=self._model,
                     max_tokens=8192,
-                    system=SYSTEM_PROMPT,
+                    system=cached_system(SYSTEM_PROMPT),
                     tools=tools,
                     messages=messages,
+                    extra_headers=PROMPT_CACHE_HEADERS,
                 )
 
                 # Collect any text content
@@ -224,7 +226,8 @@ class FinancialAgent:
                 finalize_resp = await self._client.messages.create(
                     model=self._model,
                     max_tokens=8192,
-                    system=SYSTEM_PROMPT,
+                    system=cached_system(SYSTEM_PROMPT),
+                    extra_headers=PROMPT_CACHE_HEADERS,
                     messages=messages,
                 )
                 for block in finalize_resp.content:

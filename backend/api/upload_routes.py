@@ -35,6 +35,20 @@ ALLOWED_TYPES = {
 MAX_FILE_SIZE = 20 * 1024 * 1024  # 20 MB
 
 
+def _detect_file_type(content: bytes) -> str | None:
+    """Detect file type from magic bytes — not from client-supplied headers."""
+    if content[:4] == b"%PDF":
+        return "pdf"
+    # CSV/plain text: must be valid UTF-8 with delimiter characters
+    try:
+        sample = content[:2048].decode("utf-8")
+        if any(c in sample for c in (",", "\t")) and "\n" in sample:
+            return "csv"
+    except UnicodeDecodeError:
+        pass
+    return None
+
+
 class DocumentResponse(BaseModel):
     id: uuid.UUID
     filename: str
@@ -49,20 +63,17 @@ async def upload_document(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_session),
 ) -> DocumentResponse:
-    content_type = file.content_type or ""
-    file_type = ALLOWED_TYPES.get(content_type)
-    if file_type is None:
-        name = file.filename or ""
-        if name.lower().endswith(".pdf"):
-            file_type = "pdf"
-        elif name.lower().endswith(".csv"):
-            file_type = "csv"
-        else:
-            raise HTTPException(status_code=415, detail="Unsupported file type. Upload a PDF or CSV.")
-
     contents = await file.read()
     if len(contents) > MAX_FILE_SIZE:
         raise HTTPException(status_code=413, detail="File exceeds 20 MB limit")
+
+    # Validate by actual file content (magic bytes), not client-supplied headers
+    file_type = _detect_file_type(contents)
+    if file_type is None:
+        raise HTTPException(
+            status_code=415,
+            detail="Unsupported file type. Upload a PDF or CSV — content must match the file type.",
+        )
 
     settings = get_settings()
     source_label = f"{file.filename} (uploaded by {current_user.email})"

@@ -34,6 +34,9 @@ pypdf>=4.3.0
 # PDF export
 fpdf2>=2.7.9
 
+# Rate limiting
+slowapi>=0.1.9
+
 # Utilities
 python-dotenv>=1.0.0
 python-multipart>=0.0.9

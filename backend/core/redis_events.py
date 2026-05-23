@@ -23,7 +23,7 @@ from typing import AsyncIterator, Awaitable, Callable
 
 logger = logging.getLogger(__name__)
 
-_KEEPALIVE_INTERVAL = 20   # seconds between keepalive pings
+_KEEPALIVE_INTERVAL = 8    # seconds — keep proxies/browsers from timing out long runs
 
 
 def _channel(report_id: str) -> str:
@@ -48,6 +48,11 @@ def publish(report_id: str, event_type: str, message: str = "", **extra) -> None
             **extra,
         })
         client.publish(_channel(report_id), payload)
+        # Also append to a persistent list so the poll endpoint can catch up
+        # even when the SSE stream has dropped.
+        list_key = f"auditforge:report:{report_id}:event_log"
+        client.rpush(list_key, payload)
+        client.expire(list_key, 3600)   # 1-hour TTL — enough for any report run
         client.close()
     except Exception as exc:
         logger.warning("redis_events.publish failed (non-fatal): %s", exc)
@@ -64,13 +69,18 @@ async def subscribe(
     """
     Async generator yielding raw SSE-formatted strings.
 
+    Uses pubsub.listen() (block=True under the hood) so the coroutine truly
+    suspends until data arrives on the socket — avoiding the polling-loop
+    behaviour of get_message(timeout>0) in redis.asyncio.
+
+    Keepalives fire every _KEEPALIVE_INTERVAL seconds via asyncio.wait_for.
+    On each keepalive the DB is re-checked: if the task completed while we
+    were waiting (missed the pub/sub event), we synthesise the terminal event
+    so the browser doesn't hang forever.
+
     catchup_check:
-        Optional async callable that returns the current report status string
-        (e.g. "complete", "error", "running").  Called AFTER the Redis
-        subscription is set up to eliminate the race where the task finishes
-        between the route handler's DB check and this subscription starting.
-        If it returns "complete" or "error", a terminal event is emitted
-        immediately without waiting for a Redis message.
+        Optional async callable returning the current report status string.
+        Called once after the subscription is confirmed and once per keepalive.
     """
     from redis.asyncio import Redis
     from backend.core.config import get_settings
@@ -79,12 +89,11 @@ async def subscribe(
     pubsub = client.pubsub()
     channel = _channel(report_id)
 
-    # Subscribe FIRST — before any DB checks — so we don't miss events
-    # published between a DB status check and this subscription being ready.
+    # Subscribe FIRST so we don't miss events published while we're setting up.
     await pubsub.subscribe(channel)
 
     try:
-        # Catch-up check: if the task already finished while we were setting up
+        # ── Initial catch-up ──────────────────────────────────────────────
         if catchup_check is not None:
             status = await catchup_check()
             if status in ("complete", "error"):
@@ -97,21 +106,46 @@ async def subscribe(
                 yield f"data: {payload}\n\n"
                 return
 
+        # ── Stream via listen() ───────────────────────────────────────────
+        # pubsub.listen() is an async generator that calls parse_response
+        # with block=True, giving us a real socket-level wait rather than a
+        # polling loop.  We wrap each __anext__() call in asyncio.wait_for so
+        # we can send keepalives and re-check the DB without hanging forever.
+        listener = pubsub.listen()
+
         while True:
             try:
-                # get_message(timeout=0) is non-blocking in redis-py async.
-                # We wrap it in asyncio.wait_for so we can send keepalives
-                # and yield control to other coroutines while waiting.
                 message = await asyncio.wait_for(
-                    pubsub.get_message(ignore_subscribe_messages=True, timeout=0),
+                    listener.__anext__(),
                     timeout=_KEEPALIVE_INTERVAL,
                 )
             except asyncio.TimeoutError:
+                # No Redis message for _KEEPALIVE_INTERVAL seconds.
                 yield ": keepalive\n\n"
+                # DB fallback: if the task finished but we missed the event,
+                # synthesise the terminal event now.
+                if catchup_check is not None:
+                    status = await catchup_check()
+                    if status in ("complete", "error"):
+                        logger.info(
+                            "SSE fallback: report %s already %s, synthesising terminal event",
+                            report_id, status,
+                        )
+                        payload = json.dumps({
+                            "type": status,
+                            "report_id": report_id,
+                            "message": "Report complete.",
+                            "ts": time.time(),
+                        })
+                        yield f"data: {payload}\n\n"
+                        return
                 continue
+            except StopAsyncIteration:
+                break
 
-            if message is None:
-                await asyncio.sleep(0.05)
+            # redis-py listen() yields subscribe-confirm messages first;
+            # skip them and only forward real "message" type frames.
+            if message.get("type") != "message":
                 continue
 
             data: str = message["data"]
@@ -123,7 +157,7 @@ async def subscribe(
             try:
                 parsed = json.loads(data)
                 if parsed.get("type") in ("complete", "error"):
-                    break
+                    return
             except json.JSONDecodeError:
                 pass
 

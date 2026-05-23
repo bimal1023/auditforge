@@ -3,6 +3,7 @@ export interface ReportRequest {
   ticker?: string;
   focus_areas: string[];
   context?: string;
+  force_refresh?: boolean;
 }
 
 export interface Citation {

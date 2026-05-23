@@ -20,6 +20,22 @@ mcp = FastMCP("file-ingest")
 
 MAX_TEXT_CHARS = 100_000   # cap PDF text to avoid flooding context
 
+# Only allow reading from OS temp directories — blocks path traversal attempts
+import tempfile as _tempfile
+_ALLOWED_DIRS = frozenset({
+    _tempfile.gettempdir(),
+    "/tmp",
+    "/var/folders",   # macOS temp
+    "/var/tmp",
+})
+
+
+def _assert_safe_path(file_path: str) -> Path:
+    path = Path(file_path).resolve()
+    if not any(str(path).startswith(d) for d in _ALLOWED_DIRS):
+        raise ValueError(f"Access denied: path must be inside a temp directory")
+    return path
+
 
 @mcp.tool()
 async def parse_pdf(file_path: str) -> dict:
@@ -39,11 +55,14 @@ async def parse_pdf(file_path: str) -> dict:
     except ImportError:
         raise RuntimeError("pypdf is not installed — run: pip install pypdf")
 
-    path = Path(file_path)
+    try:
+        path = _assert_safe_path(file_path)
+    except ValueError as e:
+        return {"error": str(e)}
     if not path.exists():
-        return {"error": f"File not found: {file_path}"}
+        return {"error": "File not found"}
     if path.suffix.lower() != ".pdf":
-        return {"error": f"Not a PDF file: {file_path}"}
+        return {"error": "Not a PDF file"}
 
     reader = pypdf.PdfReader(str(path))
     pages_text: list[str] = []
@@ -77,9 +96,12 @@ async def parse_csv(file_path: str) -> dict:
         count     : total row count
         file      : echoed file path
     """
-    path = Path(file_path)
+    try:
+        path = _assert_safe_path(file_path)
+    except ValueError as e:
+        return {"error": str(e)}
     if not path.exists():
-        return {"error": f"File not found: {file_path}"}
+        return {"error": "File not found"}
 
     rows: list[dict] = []
     headers: list[str] = []

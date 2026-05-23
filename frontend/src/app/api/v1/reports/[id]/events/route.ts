@@ -5,7 +5,8 @@
  */
 import { NextRequest } from "next/server";
 
-const BACKEND = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
+// API_URL is server-side only — never exposed to the browser bundle
+const BACKEND = process.env.API_URL ?? "http://localhost:8000";
 
 export async function GET(
   request: NextRequest,
@@ -18,8 +19,7 @@ export async function GET(
   try {
     backendRes = await fetch(`${BACKEND}/api/v1/reports/${id}/events`, {
       headers: { Authorization: auth },
-      // signal is not forwarded — we let the browser close the connection
-      // naturally by reading until the stream ends
+      cache: "no-store",
     });
   } catch {
     return new Response("upstream unavailable", { status: 502 });

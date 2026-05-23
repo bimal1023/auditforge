@@ -16,6 +16,7 @@ from typing import Any
 import anthropic
 
 from backend.core.config import get_settings
+from backend.agents._prompt_cache import cached_system, PROMPT_CACHE_HEADERS
 from backend.hooks.audit_logging import AuditLoggingHook
 from backend.hooks.base import HookContext
 from backend.hooks.input_normalization import InputNormalizationHook
@@ -85,7 +86,7 @@ class RiskAgent:
             max_retries=settings.anthropic_max_retries,
             timeout=settings.anthropic_request_timeout,
         )
-        self._model = settings.specialist_model
+        self._model = settings.fast_model
         self._hooks_pre = [InputNormalizationHook(), PolicyEnforcementHook(), AuditLoggingHook()]
         self._hooks_post = [OutputValidationHook(), AuditLoggingHook(), PolicyEnforcementHook()]
 
@@ -107,7 +108,7 @@ class RiskAgent:
         if norm.get("ticker"):
             user_msg += f" (ticker: {norm['ticker']})"
         if norm.get("context"):
-            user_msg += f"\n\nAdditional context: {norm['context']}"
+            user_msg += f"\n\n<analyst_context>\n{norm['context']}\n</analyst_context>"
 
         messages: list[dict[str, Any]] = [{"role": "user", "content": user_msg}]
         final_text = ""
@@ -127,9 +128,10 @@ class RiskAgent:
                 response = await self._client.messages.create(
                     model=self._model,
                     max_tokens=8192,
-                    system=SYSTEM_PROMPT,
+                    system=cached_system(SYSTEM_PROMPT),
                     tools=tools,
                     messages=messages,
+                    extra_headers=PROMPT_CACHE_HEADERS,
                 )
                 for block in response.content:
                     if block.type == "text":
@@ -156,7 +158,7 @@ class RiskAgent:
             logger.warning("RiskAgent JSON incomplete — running finalize call")
             try:
                 messages.append({"role": "user", "content": "Output ONLY the complete JSON object now. No markdown, no tool calls."})
-                fr = await self._client.messages.create(model=self._model, max_tokens=8192, system=SYSTEM_PROMPT, messages=messages)
+                fr = await self._client.messages.create(model=self._model, max_tokens=8192, system=cached_system(SYSTEM_PROMPT), messages=messages)
                 for block in fr.content:
                     if block.type == "text":
                         final_text = block.text; break

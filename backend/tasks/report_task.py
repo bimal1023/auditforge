@@ -20,9 +20,11 @@ logger = logging.getLogger(__name__)
 
 @celery_app.task(
     bind=True,
-    max_retries=1,
-    soft_time_limit=600,   # 10 min soft kill
-    time_limit=660,        # 11 min hard kill
+    max_retries=2,
+    acks_late=True,            # don't ack until task completes — requeues on worker crash
+    reject_on_worker_lost=False,  # don't auto-requeue on crash — prevents ghost tasks on restart
+    soft_time_limit=660,   # 11 min soft kill
+    time_limit=720,        # 12 min hard kill
     name="backend.tasks.run_report",
 )
 def run_report(self, report_id: str, request_data: dict) -> dict:
@@ -76,6 +78,10 @@ async def _run_task(report_id: uuid.UUID, request_data: dict) -> dict:
                 record.data = result.model_dump(mode="json")
                 await db.commit()
 
+        # Publish AFTER DB commit so the frontend always fetches complete data
+        from backend.core.redis_events import publish as _publish
+        _publish(str(report_id), "complete", message="Report complete.")
+
         return {"status": "complete", "report_id": str(report_id)}
 
     except Exception as exc:
@@ -92,7 +98,8 @@ async def _run_task(report_id: uuid.UUID, request_data: dict) -> dict:
                 record = await db.get(ReportRecord, report_id)
                 if record:
                     record.status = "error"
-                    record.error = str(exc)
+                    # Store a safe reference only — full exception logged server-side above
+                    record.error = f"Report generation failed (ref: {str(report_id)[:8]})"
                     await db.commit()
         except Exception:
             logger.exception("Failed to mark report %s as error", report_id)

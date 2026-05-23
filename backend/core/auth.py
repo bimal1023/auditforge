@@ -1,6 +1,7 @@
 """JWT authentication utilities."""
 from __future__ import annotations
 
+import hashlib
 from datetime import datetime, timedelta, timezone
 from uuid import UUID
 
@@ -38,6 +39,37 @@ def create_access_token(user_id: UUID) -> str:
     )
 
 
+def _token_blacklist_key(token: str) -> str:
+    """Store a short hash of the token to avoid keeping full tokens in Redis."""
+    return "auditforge:blacklist:" + hashlib.sha256(token.encode()).hexdigest()
+
+
+def blacklist_token(token: str) -> None:
+    """Add token to Redis blacklist. Expires after the token's own TTL."""
+    try:
+        import redis as _redis
+        settings = get_settings()
+        payload = jwt.decode(token, settings.secret_key, algorithms=["HS256"])
+        exp = payload.get("exp", 0)
+        ttl = max(1, int(exp - datetime.now(timezone.utc).timestamp()))
+        client = _redis.from_url(settings.redis_url, socket_connect_timeout=2)
+        client.setex(_token_blacklist_key(token), ttl, "1")
+        client.close()
+    except Exception:
+        pass  # logout is best-effort; log but never fail the request
+
+
+def _is_token_blacklisted(token: str) -> bool:
+    try:
+        import redis as _redis
+        client = _redis.from_url(get_settings().redis_url, socket_connect_timeout=2)
+        result = client.exists(_token_blacklist_key(token))
+        client.close()
+        return bool(result)
+    except Exception:
+        return False  # Redis unavailable → allow the request
+
+
 def _decode_token(token: str) -> UUID:
     try:
         payload = jwt.decode(token, get_settings().secret_key, algorithms=["HS256"])
@@ -54,6 +86,12 @@ async def get_current_user(
     creds: HTTPAuthorizationCredentials = Depends(_bearer),
     db: AsyncSession = Depends(get_session),
 ) -> User:
+    if _is_token_blacklisted(creds.credentials):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Token has been revoked",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
     user_id = _decode_token(creds.credentials)
     user = await db.get(User, user_id)
     if user is None:

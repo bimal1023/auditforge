@@ -1,13 +1,109 @@
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&family=Instrument+Serif:ital@0;1&display=swap');
+
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
 
 @layer base {
   :root {
-    --background: #f8fafc;
-    --foreground: #0f172a;
+    --bg: #FAFAF9;
+    --surface: #FFFFFF;
+    --surface-2: #F7F7F5;
+    --surface-3: #F4F4F2;
+    --border: #ECECE9;
+    --border-strong: #E4E4E0;
+    --hairline: #F1F1EE;
+    --ink: #0E0E10;
+    --ink-2: #3F3F46;
+    --ink-3: #71717A;
+    --ink-4: #A1A1AA;
+    --ink-5: #D4D4D8;
+    --brand: #7C3AED;
+    --brand-hover: #6D28D9;
+    --brand-deep: #5B21B6;
+    --brand-soft: #EDE9FE;
+    --brand-tint: #F5F3FF;
+    --brand-ink: #4C1D95;
+    --brand-glow: rgba(124, 58, 237, 0.18);
+    --green: #059669;
+    --green-soft: #ECFDF5;
+    --green-ink: #065F46;
+    --amber: #D97706;
+    --amber-soft: #FEF3C7;
+    --amber-ink: #92400E;
+    --red: #DC2626;
+    --red-soft: #FEF2F2;
+    --red-ink: #991B1B;
+    --blue: #2563EB;
+    --blue-soft: #EFF6FF;
+    --shadow-xs: 0 1px 1px rgba(16,16,20,.04);
+    --shadow-sm: 0 1px 2px rgba(16,16,20,.04), 0 1px 1px rgba(16,16,20,.02);
+    --shadow-md: 0 1px 2px rgba(16,16,20,.06), 0 4px 12px rgba(16,16,20,.05);
+    --shadow-lg: 0 12px 32px rgba(16,16,20,.08), 0 2px 6px rgba(16,16,20,.04);
+    --shadow-card: 0 0 0 1px var(--border), 0 1px 2px rgba(16,16,20,.03);
   }
-  body {
-    @apply bg-slate-50 text-slate-900 antialiased;
+
+  * { box-sizing: border-box; }
+
+  html, body {
+    margin: 0;
+    padding: 0;
+    background: var(--bg);
+    font-family: 'Inter', system-ui, sans-serif;
+    color: var(--ink);
+    -webkit-font-smoothing: antialiased;
+    height: 100%;
   }
+}
+
+@layer utilities {
+  .af-mono {
+    font-family: 'JetBrains Mono', ui-monospace, monospace;
+    font-feature-settings: 'zero', 'ss01';
+  }
+  .af-serif {
+    font-family: 'Instrument Serif', Georgia, serif;
+  }
+  .af-tnum {
+    font-variant-numeric: tabular-nums;
+  }
+  .af-skel {
+    background: linear-gradient(90deg, var(--surface-2) 0%, var(--surface-3) 50%, var(--surface-2) 100%);
+    background-size: 200% 100%;
+    animation: af-shimmer 1.8s ease-in-out infinite;
+    border-radius: 6px;
+  }
+  .af-scroll::-webkit-scrollbar { width: 8px; height: 8px; }
+  .af-scroll::-webkit-scrollbar-thumb { background: var(--ink-5); border-radius: 4px; }
+  .af-scroll { scrollbar-width: thin; scrollbar-color: var(--ink-5) transparent; }
+}
+
+@keyframes af-pulse {
+  0%, 100% { opacity: 1; transform: scale(1); }
+  50% { opacity: .55; transform: scale(.94); }
+}
+@keyframes af-pulse-ring {
+  0%   { box-shadow: 0 0 0 0 var(--brand-glow); }
+  70%  { box-shadow: 0 0 0 10px rgba(124,58,237,0); }
+  100% { box-shadow: 0 0 0 0 rgba(124,58,237,0); }
+}
+@keyframes af-shimmer {
+  0%   { background-position: -200% 0; }
+  100% { background-position: 200% 0; }
+}
+@keyframes af-marquee {
+  0%   { transform: translateX(0); }
+  100% { transform: translateX(-50%); }
+}
+@keyframes af-bar {
+  0%   { background-position: 0 0; }
+  100% { background-position: 24px 0; }
+}
+@keyframes af-slide-in {
+  0%   { opacity: 0; transform: translateY(8px); }
+  100% { opacity: 1; transform: translateY(0); }
+}
+@keyframes af-dot {
+  0%, 80%, 100% { opacity: .25; }
+  40%           { opacity: 1; }
 }

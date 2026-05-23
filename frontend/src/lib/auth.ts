@@ -13,6 +13,22 @@ export function clearToken(): void {
   localStorage.removeItem(TOKEN_KEY);
 }
 
+export async function logout(): Promise<void> {
+  const token = getToken();
+  if (token) {
+    // Best-effort — don't block the UI if the server is unreachable
+    try {
+      await fetch("/api/v1/auth/logout", {
+        method: "POST",
+        headers: { Authorization: `Bearer ${token}` },
+      });
+    } catch {
+      // ignore
+    }
+  }
+  clearToken();
+}
+
 export function authHeaders(): Record<string, string> {
   const token = getToken();
   return token ? { Authorization: `Bearer ${token}` } : {};
