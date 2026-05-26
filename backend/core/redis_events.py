@@ -34,12 +34,27 @@ def _channel(report_id: str) -> str:
 # Publish (synchronous — called from Celery worker)
 # ---------------------------------------------------------------------------
 
+_sync_pool: "redis.ConnectionPool | None" = None
+
+
+def _get_sync_client() -> "redis.Redis":
+    """Return a sync Redis client backed by a module-level connection pool."""
+    global _sync_pool
+    import redis as _redis
+    from backend.core.config import get_settings
+    if _sync_pool is None:
+        _sync_pool = _redis.ConnectionPool.from_url(
+            get_settings().redis_url,
+            socket_connect_timeout=2,
+            max_connections=10,
+        )
+    return _redis.Redis(connection_pool=_sync_pool)
+
+
 def publish(report_id: str, event_type: str, message: str = "", **extra) -> None:
     """Fire-and-forget publish from sync context. Swallows errors."""
     try:
-        import redis as _redis
-        from backend.core.config import get_settings
-        client = _redis.from_url(get_settings().redis_url, socket_connect_timeout=2)
+        client = _get_sync_client()
         payload = json.dumps({
             "type": event_type,
             "report_id": report_id,
@@ -53,7 +68,6 @@ def publish(report_id: str, event_type: str, message: str = "", **extra) -> None
         list_key = f"auditforge:report:{report_id}:event_log"
         client.rpush(list_key, payload)
         client.expire(list_key, 3600)   # 1-hour TTL — enough for any report run
-        client.close()
     except Exception as exc:
         logger.warning("redis_events.publish failed (non-fatal): %s", exc)
 

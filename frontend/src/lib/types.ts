@@ -86,6 +86,15 @@ export interface LegalSection {
   confidence_score: number;
 }
 
+export interface ReportSummary {
+  id: string;
+  status: string;
+  company: string;
+  ticker?: string;
+  overall_score?: number;
+  generated_at?: string;
+}
+
 export interface Report {
   id: string;
   company: string;

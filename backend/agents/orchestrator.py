@@ -74,7 +74,8 @@ class Orchestrator:
 
     def _emit(self, event_type: str, message: str = "", **extra) -> None:
         if self._report_id:
-            publish(self._report_id, event_type, message=message, **extra)
+            loop = asyncio.get_event_loop()
+            loop.run_in_executor(None, lambda: publish(self._report_id, event_type, message=message, **extra))
 
     # ------------------------------------------------------------------
     # Public entry point

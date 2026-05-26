@@ -108,28 +108,33 @@ async def upload_document(
         if not text.strip():
             raise HTTPException(status_code=422, detail="No text could be extracted from the file")
 
-        # Step 2: ingest into pgvector
-        async with MCPClient(
-            settings.pgvector_mcp_script,
-            extra_env={"DATABASE_URL": db_url},
-        ) as rag:
-            ingest_raw = await rag.call_tool(
-                "ingest_document",
-                {
-                    "text": text,
-                    "source": source_label,
-                    "metadata": {
-                        "user_id": str(current_user.id),
-                        "filename": file.filename,
-                        "file_type": file_type,
+        # Step 2: ingest into pgvector (best-effort — failure saves doc with 0 chunks)
+        try:
+            async with MCPClient(
+                settings.pgvector_mcp_script,
+                extra_env={"DATABASE_URL": db_url},
+            ) as rag:
+                ingest_raw = await rag.call_tool(
+                    "ingest_document",
+                    {
+                        "text": text,
+                        "source": source_label,
+                        "metadata": {
+                            "user_id": str(current_user.id),
+                            "filename": file.filename,
+                            "file_type": file_type,
+                        },
                     },
-                },
-            )
-            try:
-                ingest_data = json.loads(ingest_raw)
-                chunks_ingested = ingest_data.get("chunks_ingested", 0)
-            except json.JSONDecodeError:
-                logger.warning("Could not parse ingest response: %s", ingest_raw)
+                )
+                try:
+                    ingest_data = json.loads(ingest_raw)
+                    chunks_ingested = ingest_data.get("chunks_ingested", 0)
+                except json.JSONDecodeError:
+                    logger.warning("Could not parse ingest response: %s", ingest_raw)
+        except Exception as rag_exc:
+            # pgvector RAG is not yet fully wired up — log and continue so the
+            # document record is still saved and the file appears in the library.
+            logger.warning("pgvector ingestion skipped (%s: %s)", type(rag_exc).__name__, rag_exc)
 
     finally:
         os.unlink(tmp_path)
@@ -152,6 +157,25 @@ async def upload_document(
         file_type=record.file_type,
         chunks_ingested=record.chunks_ingested,
     )
+
+
+@router.delete("/{doc_id}", status_code=204)
+async def delete_document(
+    doc_id: uuid.UUID,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_session),
+) -> None:
+    result = await db.execute(
+        select(DocumentRecord).where(
+            DocumentRecord.id == doc_id,
+            DocumentRecord.user_id == current_user.id,
+        )
+    )
+    record = result.scalar_one_or_none()
+    if record is None:
+        raise HTTPException(status_code=404, detail="Document not found")
+    await db.delete(record)
+    await db.commit()
 
 
 @router.get("", response_model=list[DocumentResponse])

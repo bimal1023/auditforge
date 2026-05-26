@@ -4,6 +4,8 @@ from __future__ import annotations
 import logging
 import sys
 
+from contextlib import asynccontextmanager
+
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
@@ -24,6 +26,7 @@ logging.basicConfig(
     format="%(asctime)s %(name)s %(levelname)s %(message)s",
 )
 
+
 class SecurityHeadersMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request: Request, call_next):
         response = await call_next(request)
@@ -34,10 +37,20 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
         return response
 
 
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    from backend.core.database import get_engine
+    from backend.models.db import Base
+    async with get_engine().begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+    yield
+
+
 app = FastAPI(
     title="AuditForge",
     description="Multi-agent PE due diligence platform",
     version="0.3.0",
+    lifespan=lifespan,
     # Don't expose version/routes in production
     docs_url="/docs" if settings.environment == "development" else None,
     redoc_url=None,
@@ -59,14 +72,6 @@ app.add_middleware(
 app.include_router(auth_router, prefix="/api/v1")
 app.include_router(router, prefix="/api/v1")
 app.include_router(upload_router, prefix="/api/v1")
-
-
-@app.on_event("startup")
-async def create_tables() -> None:
-    from backend.core.database import get_engine
-    from backend.models.db import Base
-    async with get_engine().begin() as conn:
-        await conn.run_sync(Base.metadata.create_all)
 
 
 @app.get("/health")

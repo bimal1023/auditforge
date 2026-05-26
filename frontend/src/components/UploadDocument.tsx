@@ -1,10 +1,9 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import { Upload, MoreHorizontal, ChevronRight } from "lucide-react";
-import { apiFetch, authHeaders } from "@/lib/auth";
-import { Pill, ScoreChip } from "./ui";
-import type { Report } from "@/lib/types";
+import { Upload, Trash2, FileText, Table2 } from "lucide-react";
+import { apiFetch } from "@/lib/auth";
+import { Pill, Spinner } from "./ui";
 
 interface UploadedDoc {
   id: string;
@@ -13,8 +12,10 @@ interface UploadedDoc {
   file_type: string;
 }
 
-function relativeTime(isoDate: string): string {
+function relativeTime(isoDate: string | undefined | null): string {
+  if (!isoDate) return "—";
   const diff = Date.now() - new Date(isoDate).getTime();
+  if (isNaN(diff)) return "—";
   const h = Math.floor(diff / 3_600_000);
   if (h < 1) return "Just now";
   if (h < 24) return `${h}h ago`;
@@ -25,17 +26,20 @@ function relativeTime(isoDate: string): string {
 
 export function UploadDocument() {
   const inputRef = useRef<HTMLInputElement>(null);
-  const [docs, setDocs] = useState<UploadedDoc[]>([]);
+  const [docs, setDocs]           = useState<UploadedDoc[]>([]);
+  const [loading, setLoading]     = useState(true);
   const [uploading, setUploading] = useState(false);
-  const [dragOver, setDragOver] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const [recentReports, setRecentReports] = useState<Report[]>([]);
+  const [dragOver, setDragOver]   = useState(false);
+  const [error, setError]         = useState<string | null>(null);
+  const [deleting, setDeleting]   = useState<string | null>(null);
 
+  /* ── Load existing documents on mount ── */
   useEffect(() => {
-    apiFetch("/api/v1/reports")
-      .then((r) => r.ok ? r.json() : [])
-      .then((data: Report[]) => setRecentReports(data.slice(0, 6)))
-      .catch(() => {});
+    apiFetch("/api/v1/documents")
+      .then((r) => (r.ok ? r.json() : []))
+      .then(setDocs)
+      .catch(() => {})
+      .finally(() => setLoading(false));
   }, []);
 
   async function upload(file: File) {
@@ -44,9 +48,7 @@ export function UploadDocument() {
     const formData = new FormData();
     formData.append("file", file);
     try {
-      const res = await fetch("/api/v1/documents", {
-        method: "POST", headers: authHeaders(), body: formData,
-      });
+      const res  = await apiFetch("/api/v1/documents", { method: "POST", body: formData });
       const data = await res.json();
       if (!res.ok) { setError(data.detail ?? "Upload failed"); return; }
       setDocs((prev) => [data, ...prev]);
@@ -70,147 +72,151 @@ export function UploadDocument() {
     if (file) upload(file);
   }
 
-  const allDocs = [
-    ...docs,
-    ...(docs.length === 0 ? [
-      { id: "d1", filename: "Apple_10K_2023.pdf",       chunks_ingested: 248, file_type: "pdf" },
-      { id: "d2", filename: "Apple_Q3_earnings.csv",    chunks_ingested: 64,  file_type: "csv" },
-      { id: "d3", filename: "Antitrust_DOJ_filing.pdf", chunks_ingested: 187, file_type: "pdf" },
-    ] : []),
-  ];
+  async function deleteDoc(id: string) {
+    if (deleting) return;
+    setDeleting(id);
+    try {
+      const res = await apiFetch(`/api/v1/documents/${id}`, { method: "DELETE" });
+      if (res.ok || res.status === 204) {
+        setDocs((prev) => prev.filter((d) => d.id !== id));
+      } else {
+        const data = await res.json().catch(() => ({}));
+        setError(data.detail ?? "Delete failed");
+      }
+    } catch {
+      setError("Delete failed — network error");
+    } finally {
+      setDeleting(null);
+    }
+  }
 
   return (
-    <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
-      {/* Knowledge base card */}
+    <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+
+      {/* ── Knowledge base ── */}
       <div style={{
         background: "var(--surface)", border: "1px solid var(--border)",
-        borderRadius: 14, boxShadow: "var(--shadow-sm)", padding: 16,
+        borderRadius: 14, boxShadow: "var(--shadow-xs)",
+        overflow: "hidden",
       }}>
-        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 4 }}>
-          <span style={{ fontSize: 13, fontWeight: 600, color: "var(--ink)" }}>Knowledge base</span>
-          <Pill tone="outline" dot>{allDocs.length} docs</Pill>
+        {/* Header */}
+        <div style={{
+          padding: "12px 14px 10px",
+          borderBottom: "1px solid var(--border)",
+          display: "flex", alignItems: "center", justifyContent: "space-between",
+        }}>
+          <span style={{ fontSize: 12.5, fontWeight: 700, color: "var(--ink)", letterSpacing: "-0.01em" }}>Knowledge base</span>
+          <Pill tone="outline">{loading ? "…" : `${docs.length} docs`}</Pill>
         </div>
-        <p style={{ margin: "0 0 12px", fontSize: 11.5, color: "var(--ink-3)", lineHeight: 1.5 }}>
-          Upload PDFs and CSVs. Agents cite them alongside SEC filings.
-        </p>
 
-        {/* Drop zone */}
-        <label
-          onDragOver={(e) => { e.preventDefault(); setDragOver(true); }}
-          onDragLeave={() => setDragOver(false)}
-          onDrop={handleDrop}
-          style={{
-            display: "flex", flexDirection: "column", alignItems: "center", gap: 6,
-            padding: "16px 14px",
-            background: dragOver ? "var(--brand-soft)" : "var(--brand-tint)",
-            border: `1.5px dashed ${dragOver ? "var(--brand-hover)" : "var(--brand)"}`,
-            borderRadius: 10, cursor: uploading ? "not-allowed" : "pointer",
-            opacity: uploading ? 0.6 : 1,
-            transition: "all 0.15s",
-          }}
-        >
-          <div style={{
-            width: 32, height: 32, borderRadius: 8,
-            background: "var(--brand-soft)", color: "var(--brand)",
-            display: "inline-flex", alignItems: "center", justifyContent: "center",
-          }}>
-            {uploading
-              ? <span style={{ width: 14, height: 14, borderRadius: 999, border: "2px solid var(--brand-soft)", borderTopColor: "var(--brand)", animation: "spin 0.7s linear infinite", display: "inline-block" }} />
-              : <Upload size={14} />
-            }
-          </div>
-          <div style={{ fontSize: 12.5, fontWeight: 600, color: "var(--ink)" }}>
-            {uploading ? "Uploading…" : "Drag PDF or CSV here"}
-          </div>
-          {!uploading && (
-            <div style={{ fontSize: 10.5, color: "var(--ink-3)" }}>
-              or <span style={{ color: "var(--brand)", fontWeight: 500 }}>browse files</span>
-            </div>
-          )}
-          <input ref={inputRef} type="file" accept=".pdf,.csv" onChange={handleFile} className="hidden" />
-        </label>
+        <div style={{ padding: 12 }}>
+          <p style={{ margin: "0 0 10px", fontSize: 11.5, color: "var(--ink-4)", lineHeight: 1.55 }}>
+            Upload PDFs and CSVs. Agents cite them alongside SEC filings.
+          </p>
 
-        {error && <p style={{ marginTop: 8, fontSize: 11.5, color: "var(--red-ink)" }}>{error}</p>}
-
-        {/* Doc list */}
-        <div style={{ marginTop: 14, display: "flex", flexDirection: "column", gap: 6 }}>
-          {allDocs.map((d) => (
-            <div key={d.id} style={{
-              display: "flex", alignItems: "center", gap: 8,
-              padding: "8px 10px",
-              background: "var(--surface-2)", border: "1px solid var(--border)",
-              borderRadius: 8,
+          {/* Drop zone */}
+          <label
+            onDragOver={(e) => { e.preventDefault(); setDragOver(true); }}
+            onDragLeave={() => setDragOver(false)}
+            onDrop={handleDrop}
+            style={{
+              display: "flex", flexDirection: "column", alignItems: "center", gap: 6,
+              padding: "14px 12px",
+              background: dragOver ? "var(--brand-soft)" : "var(--brand-tint)",
+              border: `1.5px dashed ${dragOver ? "var(--brand)" : "rgba(27,58,107,0.30)"}`,
+              borderRadius: 10, cursor: uploading ? "not-allowed" : "pointer",
+              opacity: uploading ? 0.7 : 1,
+              transition: "all 0.15s",
+            }}
+          >
+            <div style={{
+              width: 34, height: 34, borderRadius: 9,
+              background: dragOver ? "var(--brand)" : "var(--brand-soft)",
+              color: dragOver ? "#fff" : "var(--brand)",
+              display: "inline-flex", alignItems: "center", justifyContent: "center",
+              transition: "all 0.15s",
             }}>
-              <div style={{
-                width: 24, height: 24, borderRadius: 5, flexShrink: 0,
-                background: d.file_type === "pdf" ? "var(--red-soft)" : "var(--green-soft)",
-                color: d.file_type === "pdf" ? "var(--red-ink)" : "var(--green-ink)",
-                display: "inline-flex", alignItems: "center", justifyContent: "center",
-                fontSize: 8.5, fontWeight: 700, letterSpacing: "0.04em",
-              }}>
-                {d.file_type.toUpperCase()}
-              </div>
-              <div style={{ flex: 1, minWidth: 0 }}>
-                <div style={{ fontSize: 11.5, fontWeight: 500, color: "var(--ink)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                  {d.filename}
-                </div>
-                <div style={{ fontSize: 10, color: "var(--ink-4)" }}>
-                  {d.chunks_ingested} chunks
-                </div>
-              </div>
-              <button style={{ background: "none", border: "none", cursor: "pointer", color: "var(--ink-4)", padding: 2, display: "flex" }}>
-                <MoreHorizontal size={14} />
-              </button>
+              {uploading ? <Spinner size={14} color="var(--brand)" /> : <Upload size={14} />}
             </div>
-          ))}
+            <div style={{ fontSize: 12.5, fontWeight: 700, color: "var(--brand)" }}>
+              {uploading ? "Uploading…" : "Drag PDF or CSV here"}
+            </div>
+            {!uploading && (
+              <div style={{ fontSize: 11, color: "var(--brand-ink)", opacity: 0.7 }}>
+                or <span style={{ fontWeight: 600 }}>browse files</span>
+              </div>
+            )}
+            <input ref={inputRef} type="file" accept=".pdf,.csv" onChange={handleFile} className="hidden" />
+          </label>
+
+          {error && (
+            <p style={{ margin: "8px 0 0", fontSize: 11.5, color: "var(--red-ink)", fontWeight: 500 }}>{error}</p>
+          )}
+
+          {/* Doc list */}
+          <div style={{ marginTop: 10, display: "flex", flexDirection: "column", gap: 4 }}>
+            {loading && (
+              <div style={{ display: "flex", justifyContent: "center", padding: "12px 0" }}>
+                <Spinner size={16} color="var(--brand)" />
+              </div>
+            )}
+            {!loading && docs.length === 0 && (
+              <p style={{ margin: 0, fontSize: 11, color: "var(--ink-4)", textAlign: "center", padding: "10px 0" }}>
+                No documents yet — upload one above.
+              </p>
+            )}
+            {docs.map((d) => {
+              const isPdf = d.file_type === "pdf";
+              return (
+                <div key={d.id} style={{
+                  display: "flex", alignItems: "center", gap: 9,
+                  padding: "8px 10px",
+                  background: "var(--surface-2)", border: "1px solid var(--border)",
+                  borderRadius: 9,
+                  transition: "background 0.12s",
+                }}>
+                  <div style={{
+                    width: 28, height: 28, borderRadius: 7, flexShrink: 0,
+                    background: isPdf ? "var(--red-soft)" : "var(--green-soft)",
+                    color: isPdf ? "var(--red-ink)" : "var(--green-ink)",
+                    display: "inline-flex", alignItems: "center", justifyContent: "center",
+                  }}>
+                    {isPdf ? <FileText size={13} /> : <Table2 size={13} />}
+                  </div>
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    <div style={{ fontSize: 11.5, fontWeight: 600, color: "var(--ink)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                      {d.filename}
+                    </div>
+                    <div style={{ fontSize: 10, color: "var(--ink-4)", marginTop: 1 }}>
+                      {d.chunks_ingested} chunks · {d.file_type.toUpperCase()}
+                    </div>
+                  </div>
+                  <button
+                    onClick={() => deleteDoc(d.id)}
+                    disabled={!!deleting}
+                    title="Remove document"
+                    style={{
+                      background: "none", border: "none", cursor: deleting ? "not-allowed" : "pointer",
+                      color: deleting === d.id ? "var(--red-ink)" : "var(--ink-4)",
+                      padding: 4, display: "flex", borderRadius: 5,
+                      opacity: deleting && deleting !== d.id ? 0.4 : 1,
+                      transition: "color 0.12s, background 0.12s",
+                      flexShrink: 0,
+                    }}
+                    onMouseEnter={(e) => { if (!deleting) { e.currentTarget.style.color = "var(--red-ink)"; e.currentTarget.style.background = "var(--red-soft)"; } }}
+                    onMouseLeave={(e) => { e.currentTarget.style.color = "var(--ink-4)"; e.currentTarget.style.background = "none"; }}
+                  >
+                    {deleting === d.id
+                      ? <Spinner size={13} color="var(--red-ink)" />
+                      : <Trash2 size={13} />}
+                  </button>
+                </div>
+              );
+            })}
+          </div>
         </div>
       </div>
 
-      {/* Recent reports */}
-      <div style={{
-        background: "var(--surface)", border: "1px solid var(--border)",
-        borderRadius: 14, boxShadow: "var(--shadow-sm)", padding: 16,
-      }}>
-        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 10 }}>
-          <span style={{ fontSize: 13, fontWeight: 600, color: "var(--ink)" }}>Recent reports</span>
-          <a style={{ fontSize: 11.5, color: "var(--brand)", cursor: "pointer", fontWeight: 500 }}>View all</a>
-        </div>
-        <div style={{ display: "flex", flexDirection: "column", gap: 2 }}>
-          {recentReports.length === 0 ? (
-            <p style={{ margin: 0, fontSize: 11.5, color: "var(--ink-4)", padding: "6px 10px" }}>
-              No reports yet.
-            </p>
-          ) : recentReports.map((r) => (
-            <div
-              key={r.id}
-              style={{
-                display: "flex", alignItems: "center", gap: 10,
-                padding: "8px 10px", borderRadius: 8, cursor: "pointer",
-                transition: "background 0.12s",
-              }}
-              onMouseEnter={(e) => (e.currentTarget.style.background = "var(--surface-2)")}
-              onMouseLeave={(e) => (e.currentTarget.style.background = "transparent")}
-            >
-              {r.overall_score != null
-                ? <ScoreChip score={r.overall_score} size="sm" />
-                : <div style={{
-                    width: 44, height: 22, borderRadius: 999,
-                    background: "var(--surface-2)", border: "1px solid var(--border)",
-                    display: "inline-flex", alignItems: "center", justifyContent: "center",
-                    fontSize: 10, fontWeight: 600, color: "var(--ink-4)",
-                  }}>{r.status === "error" ? "ERR" : "…"}</div>
-              }
-              <div style={{ flex: 1, minWidth: 0 }}>
-                <div style={{ fontSize: 12, fontWeight: 600, color: "var(--ink)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{r.company}</div>
-                <div style={{ fontSize: 10, color: "var(--ink-4)", fontFamily: "JetBrains Mono, monospace" }}>
-                  {r.ticker ?? "–"} · {r.generated_at ? relativeTime(r.generated_at) : r.status}
-                </div>
-              </div>
-              <ChevronRight size={12} color="var(--ink-4)" />
-            </div>
-          ))}
-        </div>
-      </div>
     </div>
   );
 }

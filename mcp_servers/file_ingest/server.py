@@ -22,12 +22,12 @@ MAX_TEXT_CHARS = 100_000   # cap PDF text to avoid flooding context
 
 # Only allow reading from OS temp directories — blocks path traversal attempts
 import tempfile as _tempfile
-_ALLOWED_DIRS = frozenset({
-    _tempfile.gettempdir(),
-    "/tmp",
-    "/var/folders",   # macOS temp
-    "/var/tmp",
-})
+# Resolve symlinks for each candidate dir (macOS: /tmp → /private/tmp, /var → /private/var)
+_ALLOWED_DIRS = frozenset(
+    str(Path(d).resolve())
+    for d in {_tempfile.gettempdir(), "/tmp", "/var/folders", "/var/tmp"}
+    if Path(d).exists()
+)
 
 
 def _assert_safe_path(file_path: str) -> Path:

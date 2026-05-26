@@ -165,7 +165,7 @@ class LegalAgent:
             logger.warning("LegalAgent JSON incomplete — running finalize call")
             try:
                 messages.append({"role": "user", "content": "Output ONLY the complete JSON object now. No markdown, no tool calls."})
-                fr = await self._client.messages.create(model=self._model, max_tokens=8192, system=cached_system(SYSTEM_PROMPT), messages=messages)
+                fr = await self._client.messages.create(model=self._model, max_tokens=8192, system=cached_system(SYSTEM_PROMPT), extra_headers=PROMPT_CACHE_HEADERS, messages=messages)
                 for block in fr.content:
                     if block.type == "text":
                         final_text = block.text; break

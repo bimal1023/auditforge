@@ -35,10 +35,12 @@ export function authHeaders(): Record<string, string> {
 }
 
 export async function apiFetch(path: string, init: RequestInit = {}): Promise<Response> {
+  // Don't set Content-Type for FormData — the browser must set the multipart boundary itself
+  const isFormData = init.body instanceof FormData;
   const res = await fetch(path, {
     ...init,
     headers: {
-      "Content-Type": "application/json",
+      ...(isFormData ? {} : { "Content-Type": "application/json" }),
       ...authHeaders(),
       ...(init.headers ?? {}),
     },
@@ -48,7 +50,7 @@ export async function apiFetch(path: string, init: RequestInit = {}): Promise<Re
     clearToken();
     // Only redirect if we're in the browser and not already on /login
     if (typeof window !== "undefined" && !window.location.pathname.startsWith("/login")) {
-      window.location.href = "/login";
+      window.location.href = "/login?next=" + encodeURIComponent(window.location.pathname);
     }
   }
 

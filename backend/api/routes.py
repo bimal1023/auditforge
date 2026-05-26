@@ -58,14 +58,19 @@ def _record_to_report(record: ReportRecord) -> DueDiligenceReport:
     )
 
 
-@router.post("/reports", response_model=ReportStatusResponse, status_code=202)
+@router.post(
+    "/reports",
+    response_model=ReportStatusResponse,
+    status_code=202,
+    responses={200: {"model": DueDiligenceReport, "description": "Cache hit — completed report returned immediately"}},
+)
 @limiter.limit("20/hour")
 async def create_report(
     request: Request,
     body: ReportRequest,
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_session),
-) -> ReportStatusResponse:
+) -> ReportStatusResponse | DueDiligenceReport:
     """Kick off a report. Returns 202 immediately; poll GET /reports/{id}.
 
     If a completed report for the same company exists within the cache TTL
@@ -151,7 +156,7 @@ async def list_reports(
             company=r.company,
             ticker=r.ticker,
             overall_score=r.data.get("overall_score") if r.data else None,
-            generated_at=r.created_at,
+            generated_at=r.updated_at,
         )
         for r in result.scalars().all()
     ]

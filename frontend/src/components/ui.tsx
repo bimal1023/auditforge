@@ -1,12 +1,8 @@
 "use client";
-// Shared visual primitives — ScoreGauge, Sparkline, ConfidencePill, Pill, etc.
-// These mirror the design system from preview.html exactly.
-
+// Shared design-system primitives
 import React, { useId } from "react";
 
-// ---------------------------------------------------------------------------
-// Formatters
-// ---------------------------------------------------------------------------
+/* ── Formatters ────────────────────────────────────────────────────────────── */
 export function fmtUSD(n: number | undefined | null, precision = 1): string {
   if (n == null) return "—";
   const abs = Math.abs(n);
@@ -23,21 +19,17 @@ export function fmtSignedPct(n: number | undefined | null, p = 1): string {
   return n == null ? "—" : (n >= 0 ? "+" : "") + (n * 100).toFixed(p) + "%";
 }
 
-// ---------------------------------------------------------------------------
-// Score band
-// ---------------------------------------------------------------------------
+/* ── Score band ─────────────────────────────────────────────────────────────  */
 export function scoreBand(s: number) {
   if (s >= 7) return { label: "BUY",   color: "var(--green)",  bg: "var(--green-soft)",  ink: "var(--green-ink)"  };
   if (s >= 4) return { label: "HOLD",  color: "var(--amber)",  bg: "var(--amber-soft)",  ink: "var(--amber-ink)"  };
   return       { label: "AVOID", color: "var(--red)",    bg: "var(--red-soft)",    ink: "var(--red-ink)"    };
 }
 
-// ---------------------------------------------------------------------------
-// ScoreGauge — 3/4 radial arc filled by score (Variant A)
-// ---------------------------------------------------------------------------
+/* ── ScoreGauge ─────────────────────────────────────────────────────────────  */
 export function ScoreGauge({ score: rawScore, size = 200 }: { score: number | null | undefined; size?: number }) {
   const score = rawScore ?? 0;
-  const band = scoreBand(score);
+  const band  = scoreBand(score);
   const cx = size / 2, cy = size / 2;
   const strokeW = Math.max(10, size * 0.08);
   const r = (size - strokeW) / 2 - 2;
@@ -48,11 +40,11 @@ export function ScoreGauge({ score: rawScore, size = 200 }: { score: number | nu
   const circ   = 2 * Math.PI * r;
   const arcLen = circ * (sweep / (2 * Math.PI));
   const dash   = arcLen * (score / 10);
+  const gradId = `sg_${Math.round(score * 100)}_${size}`;
 
   const px = (a: number) => cx + r * Math.cos(a);
   const py = (a: number) => cy + r * Math.sin(a);
   const bgPath = `M ${px(startA)} ${py(startA)} A ${r} ${r} 0 1 1 ${px(endA)} ${py(endA)}`;
-  const gradId = `sg_${Math.round(score * 100)}`;
 
   const ticks = Array.from({ length: 11 }, (_, i) => {
     const t = i / 10;
@@ -62,27 +54,23 @@ export function ScoreGauge({ score: rawScore, size = 200 }: { score: number | nu
     return {
       x1: cx + inner * Math.cos(a), y1: cy + inner * Math.sin(a),
       x2: cx + outer * Math.cos(a), y2: cy + outer * Math.sin(a),
-      major: i % 5 === 0, value: i,
+      major: i % 5 === 0,
     };
   });
 
   return (
-    <div style={{ display: "inline-flex", flexDirection: "column", alignItems: "center", gap: 6 }}>
-      <svg
-        width={size} height={size * 0.86}
-        viewBox={`0 0 ${size} ${size * 0.86}`}
-        style={{ overflow: "visible" }}
-      >
+    <div style={{ display: "inline-flex", flexDirection: "column", alignItems: "center", gap: 8 }}>
+      <svg width={size} height={size * 0.86} viewBox={`0 0 ${size} ${size * 0.86}`} style={{ overflow: "visible" }}>
         <defs>
           <linearGradient id={gradId} x1="0" y1="0" x2="1" y2="1">
-            <stop offset="0%" stopColor={band.color} stopOpacity="0.85" />
+            <stop offset="0%" stopColor={band.color} stopOpacity="0.7" />
             <stop offset="100%" stopColor={band.color} stopOpacity="1" />
           </linearGradient>
         </defs>
         {ticks.map((t, i) => (
           <line key={i} x1={t.x1} y1={t.y1} x2={t.x2} y2={t.y2}
             stroke="var(--ink-5)" strokeWidth={t.major ? 1.5 : 1}
-            opacity={t.major ? 0.55 : 0.3} strokeLinecap="round" />
+            opacity={t.major ? 0.6 : 0.3} strokeLinecap="round" />
         ))}
         <path d={bgPath} stroke="var(--surface-2)" strokeWidth={strokeW} fill="none" strokeLinecap="round" />
         <path d={bgPath}
@@ -100,7 +88,7 @@ export function ScoreGauge({ score: rawScore, size = 200 }: { score: number | nu
           );
         })}
         <text x={cx} y={cy - size * 0.04}
-          fontFamily="Inter, sans-serif" fontSize={size * 0.32} fontWeight="700"
+          fontFamily="Inter, sans-serif" fontSize={size * 0.30} fontWeight="700"
           letterSpacing="-0.04em" fill="var(--ink)" textAnchor="middle" dominantBaseline="middle"
           style={{ fontVariantNumeric: "tabular-nums" }}
         >{score.toFixed(1)}</text>
@@ -110,21 +98,19 @@ export function ScoreGauge({ score: rawScore, size = 200 }: { score: number | nu
       </svg>
       <div style={{
         display: "inline-flex", alignItems: "center", gap: 8,
-        padding: "5px 12px 5px 10px",
+        padding: "5px 14px 5px 10px",
         background: band.bg, color: band.ink,
-        fontSize: 11.5, fontWeight: 700, letterSpacing: "0.08em",
+        fontSize: 12, fontWeight: 700, letterSpacing: "0.07em",
         borderRadius: 999,
       }}>
-        <span style={{ width: 6, height: 6, borderRadius: 999, background: band.color }} />
+        <span style={{ width: 7, height: 7, borderRadius: 999, background: band.color }} />
         {band.label}
       </div>
     </div>
   );
 }
 
-// ---------------------------------------------------------------------------
-// ScoreChip — compact inline chip (used in lists)
-// ---------------------------------------------------------------------------
+/* ── ScoreChip ───────────────────────────────────────────────────────────────  */
 export function ScoreChip({ score, size = "md" }: { score: number; size?: "sm" | "md" | "lg" }) {
   const band = scoreBand(score);
   const h = size === "lg" ? 36 : size === "sm" ? 22 : 28;
@@ -133,8 +119,8 @@ export function ScoreChip({ score, size = "md" }: { score: number; size?: "sm" |
   const labelFz = size === "lg" ? 12 : 11;
   return (
     <div style={{
-      display: "inline-flex", alignItems: "center", gap: 8,
-      padding: size === "lg" ? "0 12px 0 4px" : "0 10px 0 3px",
+      display: "inline-flex", alignItems: "center", gap: 7,
+      padding: size === "lg" ? "0 12px 0 4px" : "0 9px 0 3px",
       height: h, background: band.bg, color: band.ink,
       borderRadius: 999, fontWeight: 700,
     }}>
@@ -144,14 +130,12 @@ export function ScoreChip({ score, size = "md" }: { score: number; size?: "sm" |
         display: "inline-flex", alignItems: "center", justifyContent: "center",
         fontSize: fz, fontWeight: 700, fontVariantNumeric: "tabular-nums",
       }}>{score.toFixed(1)}</div>
-      <span style={{ fontSize: labelFz, letterSpacing: "0.06em" }}>{band.label}</span>
+      <span style={{ fontSize: labelFz, letterSpacing: "0.05em" }}>{band.label}</span>
     </div>
   );
 }
 
-// ---------------------------------------------------------------------------
-// Sparkline — inline SVG trend line
-// ---------------------------------------------------------------------------
+/* ── Sparkline ───────────────────────────────────────────────────────────────  */
 export function Sparkline({
   data, width = 90, height = 28,
   stroke = "var(--brand)", strokeWidth = 1.5,
@@ -176,7 +160,7 @@ export function Sparkline({
     <svg width={width} height={height} style={{ display: "block", overflow: "visible" }}>
       <defs>
         <linearGradient id={gradId} x1="0" y1="0" x2="0" y2="1">
-          <stop offset="0%" stopColor={stroke} stopOpacity="0.18" />
+          <stop offset="0%" stopColor={stroke} stopOpacity="0.2" />
           <stop offset="100%" stopColor={stroke} stopOpacity="0" />
         </linearGradient>
       </defs>
@@ -188,9 +172,7 @@ export function Sparkline({
   );
 }
 
-// ---------------------------------------------------------------------------
-// ConfidencePill — confidence % with inline mini bar
-// ---------------------------------------------------------------------------
+/* ── ConfidencePill ──────────────────────────────────────────────────────────  */
 export function ConfidencePill({ score, size = "md" }: { score: number; size?: "sm" | "md" }) {
   const tone = score >= 0.85 ? "green" : score >= 0.7 ? "brand" : score >= 0.5 ? "amber" : "red";
   const tones = {
@@ -208,8 +190,8 @@ export function ConfidencePill({ score, size = "md" }: { score: number; size?: "
       fontSize: size === "sm" ? 11 : 11.5, fontWeight: 600,
     }}>
       <div style={{
-        position: "relative", width: 28, height: 4,
-        background: "rgba(0,0,0,0.08)", borderRadius: 999, overflow: "hidden",
+        position: "relative", width: 30, height: 4,
+        background: "rgba(0,0,0,0.10)", borderRadius: 999, overflow: "hidden",
       }}>
         <div style={{
           position: "absolute", inset: 0, right: "auto",
@@ -217,14 +199,12 @@ export function ConfidencePill({ score, size = "md" }: { score: number; size?: "
           background: tones.fill, borderRadius: 999,
         }} />
       </div>
-      <span style={{ fontVariantNumeric: "tabular-nums" }}>{Math.round(score * 100)}% confidence</span>
+      <span style={{ fontVariantNumeric: "tabular-nums" }}>{Math.round(score * 100)}% conf.</span>
     </div>
   );
 }
 
-// ---------------------------------------------------------------------------
-// Pill — small label/badge
-// ---------------------------------------------------------------------------
+/* ── Pill ────────────────────────────────────────────────────────────────────  */
 export function Pill({
   tone = "neutral", dot = false, children, style,
 }: {
@@ -234,36 +214,35 @@ export function Pill({
   style?: React.CSSProperties;
 }) {
   const tones = {
-    neutral: { bg: "var(--surface-2)",  fg: "var(--ink-2)",    dot: "var(--ink-4)" },
-    brand:   { bg: "var(--brand-soft)", fg: "var(--brand-ink)", dot: "var(--brand)" },
-    green:   { bg: "var(--green-soft)", fg: "var(--green-ink)", dot: "var(--green)" },
-    amber:   { bg: "var(--amber-soft)", fg: "var(--amber-ink)", dot: "var(--amber)" },
-    red:     { bg: "var(--red-soft)",   fg: "var(--red-ink)",   dot: "var(--red)" },
-    blue:    { bg: "var(--blue-soft)",  fg: "#1E40AF",          dot: "var(--blue)" },
-    outline: { bg: "transparent",       fg: "var(--ink-2)",     dot: "var(--ink-4)" },
+    neutral: { bg: "var(--surface-2)",  fg: "var(--ink-3)",    dot: "var(--ink-4)", border: "var(--border)" },
+    brand:   { bg: "var(--brand-soft)", fg: "var(--brand-ink)", dot: "var(--brand)", border: "transparent" },
+    green:   { bg: "var(--green-soft)", fg: "var(--green-ink)", dot: "var(--green)", border: "transparent" },
+    amber:   { bg: "var(--amber-soft)", fg: "var(--amber-ink)", dot: "var(--amber)", border: "transparent" },
+    red:     { bg: "var(--red-soft)",   fg: "var(--red-ink)",   dot: "var(--red)",   border: "transparent" },
+    blue:    { bg: "var(--blue-soft)",  fg: "var(--blue-ink)",  dot: "var(--blue)",  border: "transparent" },
+    outline: { bg: "transparent",       fg: "var(--ink-3)",     dot: "var(--ink-4)", border: "var(--border-strong)" },
   }[tone];
   return (
     <span style={{
       display: "inline-flex", alignItems: "center", gap: 5,
-      padding: dot ? "3px 8px 3px 7px" : "3px 8px",
+      padding: "3px 9px",
       fontSize: 11, fontWeight: 600, lineHeight: 1,
       borderRadius: 999, background: tones.bg, color: tones.fg,
-      border: tone === "outline" ? "1px solid var(--border-strong)" : "1px solid transparent",
+      border: `1px solid ${tones.border}`,
       letterSpacing: "0.01em", whiteSpace: "nowrap",
       ...style,
     }}>
-      {dot && <span style={{ width: 6, height: 6, borderRadius: 999, background: tones.dot }} />}
+      {dot && (
+        <span style={{ width: 6, height: 6, borderRadius: 999, background: tones.dot, flexShrink: 0 }} />
+      )}
       {children}
     </span>
   );
 }
 
-// ---------------------------------------------------------------------------
-// Card
-// ---------------------------------------------------------------------------
+/* ── Card ────────────────────────────────────────────────────────────────────  */
 export function Card({
-  children, style, muted = false,
-  className = "",
+  children, style, muted = false, className = "",
 }: {
   children: React.ReactNode;
   style?: React.CSSProperties;
@@ -271,29 +250,37 @@ export function Card({
   className?: string;
 }) {
   return (
-    <div
-      className={className}
-      style={{
-        background: muted ? "var(--surface-2)" : "var(--surface)",
-        border: "1px solid var(--border)",
-        borderRadius: 14,
-        boxShadow: muted ? "none" : "var(--shadow-sm)",
-        ...style,
-      }}
-    >{children}</div>
+    <div className={className} style={{
+      background: muted ? "var(--surface-2)" : "var(--surface)",
+      border: "1px solid var(--border)",
+      borderRadius: 14,
+      boxShadow: muted ? "none" : "var(--shadow-sm)",
+      ...style,
+    }}>{children}</div>
   );
 }
 
-// ---------------------------------------------------------------------------
-// Eyebrow — small uppercase label
-// ---------------------------------------------------------------------------
+/* ── Eyebrow ─────────────────────────────────────────────────────────────────  */
 export function Eyebrow({ children, style }: { children: React.ReactNode; style?: React.CSSProperties }) {
   return (
     <div style={{
-      fontSize: 10.5, fontWeight: 600,
+      fontSize: 10.5, fontWeight: 700,
       letterSpacing: "0.08em", textTransform: "uppercase",
       color: "var(--ink-4)",
       ...style,
     }}>{children}</div>
+  );
+}
+
+/* ── Spinner ─────────────────────────────────────────────────────────────────  */
+export function Spinner({ size = 16, color = "currentColor" }: { size?: number; color?: string }) {
+  return (
+    <span style={{
+      width: size, height: size, borderRadius: 999, flexShrink: 0,
+      border: `2px solid ${color}30`,
+      borderTopColor: color,
+      animation: "spin 0.7s linear infinite",
+      display: "inline-block",
+    }} />
   );
 }

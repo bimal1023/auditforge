@@ -158,12 +158,25 @@ class DueDiligenceReport(BaseModel):
 # API request/response
 # ---------------------------------------------------------------------------
 
+_VALID_FOCUS_AREAS = {"financial", "risk", "market", "legal"}
+
+
 class ReportRequest(BaseModel):
-    company_name: str
+    company_name: str = Field(..., min_length=1)
     ticker: Optional[str] = None
     focus_areas: list[str] = ["financial", "risk", "market", "legal"]
     context: Optional[str] = None   # any extra PE context to pass to agents
     force_refresh: bool = False     # bypass response cache and run fresh agents
+
+    @field_validator("focus_areas")
+    @classmethod
+    def _validate_focus_areas(cls, v: list[str]) -> list[str]:
+        bad = set(v) - _VALID_FOCUS_AREAS
+        if bad:
+            raise ValueError(f"Unknown focus areas: {bad}. Valid values: {_VALID_FOCUS_AREAS}")
+        if not v:
+            raise ValueError("focus_areas must contain at least one area")
+        return v
 
 
 class ReportStatusResponse(BaseModel):
