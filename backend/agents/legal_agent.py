@@ -24,18 +24,20 @@ from backend.hooks.output_validation import OutputValidationHook
 from backend.hooks.policy_enforcement import PolicyEnforcementHook
 from backend.models.report import Citation, LegalSection
 
-from ._mcp_client import MultiMCPClient
+from ._rag import agent_mcp, rag_hint, visible_tools
 
 logger = logging.getLogger(__name__)
 
 SYSTEM_PROMPT = """\
-You are the Legal Analysis Agent for AuditForge, a PE due diligence platform.
+You are the Legal Analysis Agent for Arthvion, a PE due diligence platform.
 
 ## Tools available
   - search_company(name)                              → find CIK
   - get_filing_list(cik, form_type)                   → recent filings
   - get_filing_text(cik, accession_number, section)   → filing text
   - search_web(query, max_results, days_back)         → recent news
+  - search_court_cases(query, max_results, date_filed_after) → US federal court dockets (CourtListener/RECAP)
+  - screen_sanctions(name, schema, limit)             → sanctions / PEP / watchlist screening (OpenSanctions)
 
 ## Process
 1. Find CIK via search_company.
@@ -45,7 +47,16 @@ You are the Legal Analysis Agent for AuditForge, a PE due diligence platform.
    - "<company> lawsuit settlement <current year>"
    - "<company> DOJ FTC SEC investigation"
    - "<company> regulatory fine penalty"
-5. Identify all material litigations and regulatory issues.
+5. Pull ACTUAL court records: call search_court_cases with the company name to
+   find dockets where it is a party. Cite the case_name, court, and
+   docket_number — these are stronger evidence than news articles.
+6. COMPLIANCE SCREEN: call screen_sanctions(name=<company>, schema="Company") to
+   check sanctions/PEP/watchlist exposure. A match with topics like "sanction"
+   or "crime" is a material red flag — surface it as a regulatory_issue.
+7. Identify all material litigations and regulatory issues.
+
+If a tool returns an "error" (court/sanctions data not configured or
+unavailable), simply proceed with the remaining sources — never fabricate.
 
 ## Output format — ONLY output valid JSON, no markdown fences:
 {
@@ -82,7 +93,7 @@ Rules: potential_liability_usd must be a raw float in USD or null;
 citations must be non-empty; never fabricate case names.
 """
 
-MAX_ITERATIONS = 14
+MAX_ITERATIONS = 8    # safety cap — most runs converge in 3-6
 
 
 class LegalAgent:
@@ -102,6 +113,7 @@ class LegalAgent:
         company: str,
         ticker: str | None = None,
         context: str | None = None,
+        workspace_id: str | None = None,
     ) -> LegalSection:
         ctx = HookContext(
             agent="legal_agent",
@@ -117,19 +129,28 @@ class LegalAgent:
         if norm.get("context"):
             user_msg += f"\n\n<analyst_context>\n{norm['context']}\n</analyst_context>"
 
-        messages: list[dict[str, Any]] = [{"role": "user", "content": user_msg}]
         final_text = ""
 
         settings = get_settings()
-        async with MultiMCPClient(
-            settings.sec_edgar_mcp_script,
-            settings.web_search_mcp_script,
-            extra_env={
+        async with agent_mcp(
+            [
+                settings.sec_edgar_mcp_script,
+                settings.web_search_mcp_script,
+                settings.courtlistener_mcp_script,
+                settings.opensanctions_mcp_script,
+            ],
+            {
                 "SEC_EDGAR_USER_AGENT": settings.sec_edgar_user_agent,
                 "TAVILY_API_KEY": settings.tavily_api_key,
+                "COURTLISTENER_API_TOKEN": settings.courtlistener_api_token,
+                "OPENSANCTIONS_API_KEY": settings.opensanctions_api_key,
             },
-        ) as mcp:
-            tools = mcp.anthropic_tools()
+            workspace_id=workspace_id,
+            settings=settings,
+        ) as (mcp, rag_on):
+            user_msg += rag_hint(rag_on)
+            messages: list[dict[str, Any]] = [{"role": "user", "content": user_msg}]
+            tools = visible_tools(mcp, rag_on)
 
             for _ in range(MAX_ITERATIONS):
                 response = await self._client.messages.create(

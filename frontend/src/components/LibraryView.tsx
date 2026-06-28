@@ -102,21 +102,16 @@ export function LibraryView({ onOpen }: Props) {
   return (
     <div style={{ maxWidth: 920, margin: "0 auto", animation: "af-slide-up 0.3s ease-out" }}>
 
-      {/* ── Page header ── */}
-      <div style={{ display: "flex", alignItems: "flex-end", justifyContent: "space-between", marginBottom: 22 }}>
-        <div>
-          <h2 style={{ margin: 0, fontSize: 24, fontWeight: 800, letterSpacing: "-0.025em", color: "var(--ink)" }}>
-            Report Library
-          </h2>
-          <p style={{ margin: "4px 0 0", fontSize: 13, color: "var(--ink-3)" }}>
-            {items.length} report{items.length !== 1 ? "s" : ""} total
-          </p>
-        </div>
+      {/* ── Toolbar (count + refresh) ── */}
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 14 }}>
+        <span style={{ fontSize: 13, color: "var(--ink-3)" }}>
+          {items.length} report{items.length !== 1 ? "s" : ""} total
+        </span>
         <button
           onClick={load}
           style={{
             display: "inline-flex", alignItems: "center", gap: 6,
-            height: 34, padding: "0 13px",
+            height: 32, padding: "0 12px",
             background: "var(--surface)", border: "1px solid var(--border-strong)",
             borderRadius: 8, cursor: "pointer", fontSize: 12.5, fontWeight: 600,
             color: "var(--ink-3)", fontFamily: "Inter, sans-serif",

@@ -1,11 +1,15 @@
 """
-Orchestrator — runs specialist agents sequentially, synthesises results.
+Orchestrator — runs specialist agents in parallel, synthesises results.
 
 Design decisions:
-  - Sequential (not parallel) to respect the free-tier 30K input-tokens/min cap.
-    Switch to asyncio.gather() once the API tier is upgraded.
+  - PARALLEL via asyncio.gather(). Requires Anthropic Tier 2+ to avoid 429s;
+    on free tier (30K input TPM) you'll see rate-limit errors during bursts.
+    To revert to sequential: replace the gather() call with a for-loop and
+    raise `agent_inter_delay_seconds` back to 10.
   - Per-agent asyncio.wait_for() timeout so one stalled SEC call can't hang
     the entire pipeline indefinitely.
+  - Each agent owns its own overload-retry logic; `_run_one_agent` never
+    re-raises, so gather() always completes regardless of partial failures.
   - Publishes structured Redis events at every stage so the SSE endpoint can
     relay real-time progress to the browser.
   - Fallback sections (confidence_score == 0.0, summary contains "failed") are
@@ -35,7 +39,7 @@ from .risk_agent import RiskAgent
 logger = logging.getLogger(__name__)
 
 SYNTHESIS_PROMPT = """\
-You are the Orchestrator for AuditForge, a PE due diligence platform.
+You are the Orchestrator for Arthvion, a PE due diligence platform.
 
 Given the specialist agent outputs below, write:
 1. A concise executive_summary (3-5 sentences) covering the key findings
@@ -56,7 +60,11 @@ _AGENT_LABELS = {
 
 
 class Orchestrator:
-    def __init__(self, report_id: str | None = None) -> None:
+    def __init__(
+        self,
+        report_id: str | None = None,
+        workspace_id: str | None = None,
+    ) -> None:
         settings = get_settings()
         self._client = anthropic.AsyncAnthropic(
             api_key=settings.anthropic_api_key,
@@ -65,8 +73,13 @@ class Orchestrator:
         )
         self._model = settings.orchestrator_model
         self._report_id = report_id
+        # When set, specialist agents can retrieve this workspace's uploaded
+        # documents via the pgvector RAG store (scoped server-side). Left None
+        # for reports run without a workspace or with no uploaded documents.
+        self._workspace_id = workspace_id
         self._timeout = settings.agent_timeout_seconds or None
-        self._inter_delay = settings.agent_inter_delay_seconds
+        # Inter-agent delay is unused now that specialists run in parallel.
+        # Kept on Settings for back-compat in case someone reverts to sequential.
 
     # ------------------------------------------------------------------
     # Internal helpers
@@ -76,6 +89,90 @@ class Orchestrator:
         if self._report_id:
             loop = asyncio.get_event_loop()
             loop.run_in_executor(None, lambda: publish(self._report_id, event_type, message=message, **extra))
+
+    async def _run_one_agent(
+        self,
+        key: str,
+        agent: Any,
+        request: ReportRequest,
+        report: DueDiligenceReport,
+    ) -> None:
+        """Run a single specialist agent; mutate `report` on success.
+
+        Owns its own retry-on-overload (one attempt) and timeout logic. Catches
+        all exceptions and emits the appropriate Redis event — never re-raises,
+        so callers can confidently use asyncio.gather() without exception
+        handling at the call site.
+        """
+        label = _AGENT_LABELS.get(key, key)
+
+        # One overload retry per agent — wait 90s then try once more
+        for attempt in range(2):
+            self._emit("agent_start", f"{label}: fetching data…", agent=key)
+            try:
+                coro = agent.run(
+                    request.company_name,
+                    ticker=request.ticker,
+                    context=request.context,
+                    workspace_id=self._workspace_id,
+                )
+                # Per-agent TIMEOUT_SECONDS takes precedence over the global setting,
+                # allowing e.g. FinancialAgent to enforce a tighter SLA.
+                per_agent_timeout = getattr(agent, "TIMEOUT_SECONDS", None)
+                timeout = per_agent_timeout or self._timeout
+                if timeout:
+                    result = await asyncio.wait_for(coro, timeout=timeout)
+                else:
+                    result = await coro
+
+                if _is_fallback(result):
+                    logger.warning(
+                        "Specialist %s returned a fallback section (confidence=0); discarding",
+                        key,
+                    )
+                    self._emit(
+                        "agent_fail",
+                        f"{label}: could not extract data from filings",
+                        agent=key,
+                    )
+                else:
+                    setattr(report, key, result)
+                    conf = getattr(result, "confidence_score", None)
+                    self._emit(
+                        "agent_done",
+                        f"{label}: complete",
+                        agent=key,
+                        confidence=round(conf, 2) if conf is not None else None,
+                    )
+                    logger.info("Specialist %s OK (confidence=%.2f)", key, conf or 0)
+                return  # success or fallback — don't retry
+
+            except asyncio.TimeoutError:
+                logger.warning("Specialist %s timed out after %ds", key, self._timeout)
+                self._emit("agent_fail", f"{label}: timed out", agent=key, reason="timeout")
+                return
+
+            except Exception as exc:
+                if attempt == 0 and _is_overloaded(exc):
+                    wait = 90
+                    logger.warning("Specialist %s overloaded — retrying in %ds", key, wait)
+                    self._emit(
+                        "status",
+                        f"{label}: API overloaded, retrying in {wait}s…",
+                        agent=key,
+                    )
+                    await asyncio.sleep(wait)
+                    # Re-instantiate the agent so MCP connections are fresh
+                    agent = type(agent)()
+                    continue
+                logger.error("Specialist %s failed: %r", key, exc, exc_info=True)
+                self._emit(
+                    "agent_fail",
+                    f"{label}: {_friendly_error(exc)}",
+                    agent=key,
+                    reason=type(exc).__name__,
+                )
+                return
 
     # ------------------------------------------------------------------
     # Public entry point
@@ -100,74 +197,13 @@ class Orchestrator:
         if "legal" in request.focus_areas:
             specs.append(("legal", LegalAgent()))
 
-        for i, (key, agent) in enumerate(specs):
-            if i > 0 and self._inter_delay:
-                await asyncio.sleep(self._inter_delay)
-
-            label = _AGENT_LABELS.get(key, key)
-
-            # One overload retry per agent — wait 90s then try once more
-            for attempt in range(2):
-                self._emit("agent_start", f"{label}: fetching data…", agent=key)
-                try:
-                    coro = agent.run(
-                        request.company_name,
-                        ticker=request.ticker,
-                        context=request.context,
-                    )
-                    if self._timeout:
-                        result = await asyncio.wait_for(coro, timeout=self._timeout)
-                    else:
-                        result = await coro
-
-                    if _is_fallback(result):
-                        logger.warning(
-                            "Specialist %s returned a fallback section (confidence=0); discarding",
-                            key,
-                        )
-                        self._emit(
-                            "agent_fail",
-                            f"{label}: could not extract data from filings",
-                            agent=key,
-                        )
-                    else:
-                        setattr(report, key, result)
-                        conf = getattr(result, "confidence_score", None)
-                        self._emit(
-                            "agent_done",
-                            f"{label}: complete",
-                            agent=key,
-                            confidence=round(conf, 2) if conf is not None else None,
-                        )
-                        logger.info("Specialist %s OK (confidence=%.2f)", key, conf or 0)
-                    break  # success or fallback — don't retry
-
-                except asyncio.TimeoutError:
-                    logger.warning("Specialist %s timed out after %ds", key, self._timeout)
-                    self._emit("agent_fail", f"{label}: timed out", agent=key, reason="timeout")
-                    break
-
-                except Exception as exc:
-                    if attempt == 0 and _is_overloaded(exc):
-                        wait = 90
-                        logger.warning("Specialist %s overloaded — retrying in %ds", key, wait)
-                        self._emit(
-                            "status",
-                            f"{label}: API overloaded, retrying in {wait}s…",
-                            agent=key,
-                        )
-                        await asyncio.sleep(wait)
-                        # Re-instantiate the agent so MCP connections are fresh
-                        agent = type(agent)()
-                        continue
-                    logger.error("Specialist %s failed: %r", key, exc, exc_info=True)
-                    self._emit(
-                        "agent_fail",
-                        f"{label}: {_friendly_error(exc)}",
-                        agent=key,
-                        reason=type(exc).__name__,
-                    )
-                    break
+        # Run all specialist agents concurrently. Each handles its own retries
+        # and exceptions internally, so gather() never raises — partial failures
+        # show up as missing sections on the report (we discard fallbacks).
+        await asyncio.gather(*(
+            self._run_one_agent(key, agent, request, report)
+            for key, agent in specs
+        ))
 
         # ── Synthesis ──────────────────────────────────────────────────────
         self._emit("status", "Synthesising findings…")
@@ -205,10 +241,17 @@ def _is_fallback(section: Any) -> bool:
 
 
 def _is_overloaded(exc: Exception) -> bool:
-    """True if the exception (or any sub-exception) is a 529 OverloadedError."""
-    from anthropic import OverloadedError
-    if isinstance(exc, OverloadedError):
-        return True
+    """True if the exception (or any sub-exception) signals a 529 overload.
+
+    The SDK renamed OverloadedError → APIStatusError(status_code=529) in newer
+    releases, so we check the status code rather than the class name.
+    """
+    try:
+        from anthropic import APIStatusError
+        if isinstance(exc, APIStatusError) and exc.status_code == 529:
+            return True
+    except ImportError:
+        pass
     # anyio wraps the error in an ExceptionGroup on teardown
     if isinstance(exc, BaseExceptionGroup):
         return any(_is_overloaded(e) for e in exc.exceptions)

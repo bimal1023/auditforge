@@ -12,7 +12,7 @@ import time
 
 from .base import BaseHook, HookContext
 
-logger = logging.getLogger("auditforge.audit")
+logger = logging.getLogger("arthvion.audit")
 
 
 class AuditLoggingHook(BaseHook):

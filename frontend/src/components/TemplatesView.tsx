@@ -96,16 +96,6 @@ export function TemplatesView({ onUseTemplate }: Props) {
   return (
     <div style={{ maxWidth: 920, margin: "0 auto", animation: "af-slide-up 0.3s ease-out" }}>
 
-      {/* ── Page header ── */}
-      <div style={{ marginBottom: 24 }}>
-        <h2 style={{ margin: 0, fontSize: 24, fontWeight: 800, letterSpacing: "-0.025em", color: "var(--ink)" }}>
-          Templates
-        </h2>
-        <p style={{ margin: "4px 0 0", fontSize: 13, color: "var(--ink-3)" }}>
-          Pre-configured analysis profiles — select one to jump straight to the report form.
-        </p>
-      </div>
-
       {/* ── Template grid ── */}
       <div style={{ display: "grid", gridTemplateColumns: isMobile ? "1fr" : "repeat(3, 1fr)", gap: 14 }}>
         {TEMPLATES.map((t) => {

@@ -47,12 +47,23 @@ def _devnull_errlog():
 class MCPClient:
     """Async context manager wrapping a single MCP stdio server process."""
 
+    # Only these env vars are forwarded to MCP subprocesses.
+    # Secrets like STRIPE_SECRET_KEY and DATABASE_URL are excluded.
+    _SAFE_ENV_KEYS = {
+        "PATH", "HOME", "USER", "LANG", "LC_ALL", "LC_CTYPE",
+        "PYTHONPATH", "VIRTUAL_ENV", "TMPDIR", "TEMP", "TMP",
+        # App-specific vars MCP servers actually need
+        "SEC_EDGAR_USER_AGENT", "TAVILY_API_KEY", "FMP_API_KEY",
+        "OPENALEX_MAILTO",
+    }
+
     def __init__(
         self,
         script_path: str,
         extra_env: dict[str, str] | None = None,
     ) -> None:
-        env = {**os.environ}
+        # Build a minimal environment — don't pass secrets MCP servers don't need
+        env = {k: v for k, v in os.environ.items() if k in self._SAFE_ENV_KEYS}
         if extra_env:
             env.update(extra_env)
 
@@ -113,10 +124,19 @@ class MCPClient:
             for t in self._tools
         ]
 
-    async def call_tool(self, name: str, arguments: dict[str, Any]) -> str:
+    async def call_tool(
+        self,
+        name: str,
+        arguments: dict[str, Any],
+        max_chars: int = 12_000,
+    ) -> str:
         """
         Call an MCP tool and return the result as a JSON string suitable for
         inserting into the Anthropic tool_result content block.
+
+        *max_chars* caps the response length. The default (12 000) is sized for
+        agent tool results that feed into Anthropic messages. Set to 0 to disable
+        truncation (e.g. for internal pgvector queries whose JSON must stay intact).
         """
         if self._session is None:
             raise RuntimeError("MCPClient not entered — use as async context manager")
@@ -128,9 +148,10 @@ class MCPClient:
             else:
                 parts.append(json.dumps(block.model_dump()))
         text = "\n".join(parts) if parts else "{}"
-        # SEC filings can be 50K+ chars — cap to keep input tokens under control
-        if len(text) > 12_000:
-            text = text[:12_000] + "\n...[truncated — use key figures above]"
+        # SEC filings can be 50K+ chars — cap to keep agent input tokens under
+        # control. Callers that need the full JSON (pgvector Q&A) pass max_chars=0.
+        if max_chars and len(text) > max_chars:
+            text = text[:max_chars] + "\n...[truncated — use key figures above]"
         return text
 
 
@@ -175,8 +196,17 @@ class MultiMCPClient:
         return tools
 
     async def call_tool(self, name: str, arguments: dict[str, Any]) -> str:
-        """Route the call to whichever server owns this tool name."""
+        """Route the call to whichever server owns this tool name.
+
+        Returns a JSON error string for unknown tools instead of raising, so
+        a model that hallucinates a tool name sees the error as a tool_result
+        and can recover — rather than crashing the whole agent run.
+        """
         client = self._tool_map.get(name)
         if client is None:
-            raise ValueError(f"Unknown tool: '{name}'")
+            available = list(self._tool_map.keys())
+            return json.dumps({
+                "error": f"Unknown tool '{name}'.",
+                "available_tools": available,
+            })
         return await client.call_tool(name, arguments)

@@ -3,7 +3,7 @@ import React from "react";
 import "./globals.css";
 
 export const metadata: Metadata = {
-  title: "AuditForge — PE Due Diligence",
+  title: "Arthvion — PE Due Diligence",
   description: "Multi-agent due diligence platform for private equity",
 };
 

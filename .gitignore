@@ -46,6 +46,10 @@ Thumbs.db
 # ── TypeScript build cache ────────────────────────────────────────────────────
 frontend/tsconfig.tsbuildinfo
 
+# ── Celery runtime state ──────────────────────────────────────────────────────
+celerybeat-schedule.db
+celerybeat-schedule
+
 # ── Docker ────────────────────────────────────────────────────────────────────
 infra/.env
 !infra/.env.example

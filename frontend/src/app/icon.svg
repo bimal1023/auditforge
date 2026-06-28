@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100" role="img" aria-label="Arthvion">
+  <rect width="100" height="100" rx="22" fill="#0B1F44"/>
+  <g transform="translate(14,14) scale(0.72)">
+    <path d="M13,89 L50,11 L87,89 Z M40.5,63 L50,41 L59.5,63 Z" fill="#FFFFFF" fill-rule="evenodd"/>
+    <path d="M28,79 L66,39 L62,36 L86,28 L79,52 L75,48 L38,88 Z" fill="#3B8AFF"/>
+  </g>
+</svg>

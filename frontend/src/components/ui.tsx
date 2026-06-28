@@ -19,6 +19,84 @@ export function fmtSignedPct(n: number | undefined | null, p = 1): string {
   return n == null ? "—" : (n >= 0 ? "+" : "") + (n * 100).toFixed(p) + "%";
 }
 
+/* ── Financial-ratio formatting ───────────────────────────────────────────────
+ * key_ratios arrives as a Record<string, number> with model-generated keys like
+ * "gross_margin_2025", "debt_to_ebitda_2026_q2", "pe_ratio_current". These two
+ * helpers turn those into a clean label + a period tag, and format the value as
+ * a percent / multiple / plain number depending on the metric type.            */
+
+const _METRIC_NAMES: Record<string, string> = {
+  pe_ratio: "P/E Ratio", pe: "P/E", peg_ratio: "PEG Ratio",
+  ps_ratio: "P/S Ratio", pb_ratio: "P/B Ratio",
+  ev_ebitda: "EV / EBITDA", ev_to_ebitda: "EV / EBITDA",
+  ev_revenue: "EV / Revenue", ev_to_revenue: "EV / Revenue", ev_sales: "EV / Sales",
+  debt_to_ebitda: "Debt / EBITDA", net_debt_to_ebitda: "Net Debt / EBITDA",
+  debt_to_equity: "Debt / Equity",
+  roe: "ROE", roa: "ROA", roic: "ROIC",
+  fcf_margin: "FCF Margin", current_ratio: "Current Ratio", quick_ratio: "Quick Ratio",
+  interest_coverage: "Interest Coverage",
+};
+
+const _WORD_NAMES: Record<string, string> = {
+  ebitda: "EBITDA", ebit: "EBIT", fcf: "FCF", roe: "ROE", roa: "ROA",
+  roic: "ROIC", pe: "P/E", ev: "EV", yoy: "YoY", ttm: "TTM", capex: "CapEx",
+};
+
+function _prettyMetric(k: string): string {
+  const lower = k.toLowerCase();
+  if (_METRIC_NAMES[lower]) return _METRIC_NAMES[lower];
+  return lower
+    .split(/[_\s]+/)
+    .filter(Boolean)
+    .map((w) => _WORD_NAMES[w] ?? w.charAt(0).toUpperCase() + w.slice(1))
+    .join(" ");
+}
+
+/** Split a ratio key into a human label and an optional period tag (e.g. "2026 Q2", "Current"). */
+export function humanizeRatioKey(key: string): { label: string; period: string | null } {
+  let k = key.trim();
+  let period: string | null = null;
+
+  const named = k.match(/_(current|ttm|ltm|fwd|forward|now)$/i);
+  const yr = k.match(/_(\d{4})(?:_(q[1-4]|h[12]))?$/i);
+
+  if (named && named.index != null) {
+    const map: Record<string, string> = {
+      current: "Current", ttm: "TTM", ltm: "LTM",
+      fwd: "Fwd", forward: "Fwd", now: "Current",
+    };
+    period = map[named[1].toLowerCase()] ?? named[1];
+    k = k.slice(0, named.index);
+  } else if (yr && yr.index != null) {
+    period = yr[2] ? `${yr[1]} ${yr[2].toUpperCase()}` : yr[1];
+    k = k.slice(0, yr.index);
+  }
+
+  return { label: _prettyMetric(k), period };
+}
+
+/** Format a ratio value as a percent, a multiple (×), or a plain number based on its key. */
+export function formatRatio(key: string, value: number): string {
+  if (value == null || Number.isNaN(value)) return "—";
+  const k = key.toLowerCase();
+
+  const isPercent = /margin|roe|roa|roic|yield|payout|growth|tax_rate|rate$/.test(k);
+  const isMultiple =
+    /pe_ratio|^pe(_|$)|peg|p[sb]_ratio|ev_|_ebitda|_ratio$|debt_to|price_to|coverage/.test(k);
+
+  if (isPercent) {
+    // Margins/returns usually arrive fractional (0.69 → 69%); guard already-percent values.
+    const pct = Math.abs(value) <= 1.5 ? value * 100 : value;
+    const signed = /growth/.test(k);
+    return (signed && pct >= 0 ? "+" : "") + pct.toFixed(1) + "%";
+  }
+  if (isMultiple) {
+    const dp = Math.abs(value) >= 100 ? 0 : Math.abs(value) >= 10 ? 1 : 2;
+    return value.toFixed(dp) + "×";
+  }
+  return value.toFixed(2);
+}
+
 /* ── Score band ─────────────────────────────────────────────────────────────  */
 export function scoreBand(s: number) {
   if (s >= 7) return { label: "BUY",   color: "var(--green)",  bg: "var(--green-soft)",  ink: "var(--green-ink)"  };
@@ -80,11 +158,11 @@ export function ScoreGauge({ score: rawScore, size = 200 }: { score: number | nu
         />
         {[0, 5, 10].map((v) => {
           const a = startA + sweep * (v / 10);
-          const lr = r - strokeW / 2 - 22;
+          const lr = r + strokeW / 2 + 9;
           return (
             <text key={v} x={cx + lr * Math.cos(a)} y={cy + lr * Math.sin(a)}
-              fontSize="10" fontFamily="JetBrains Mono, monospace" fontWeight="600"
-              fill="var(--ink-4)" textAnchor="middle" dominantBaseline="middle">{v}</text>
+              fontSize={size * 0.052} fontFamily="JetBrains Mono, monospace" fontWeight="600"
+              fill="var(--ink-5)" textAnchor="middle" dominantBaseline="middle">{v}</text>
           );
         })}
         <text x={cx} y={cy - size * 0.04}

@@ -27,7 +27,15 @@ _KEEPALIVE_INTERVAL = 8    # seconds — keep proxies/browsers from timing out l
 
 
 def _channel(report_id: str) -> str:
-    return f"auditforge:report:{report_id}:events"
+    return f"arthvion:report:{report_id}:events"
+
+
+def _workspace_channel(workspace_id: str) -> str:
+    return f"arthvion:workspace:{workspace_id}:activity"
+
+
+def _comment_channel(target_type: str, target_id: str) -> str:
+    return f"arthvion:{target_type}:{target_id}:comments"
 
 
 # ---------------------------------------------------------------------------
@@ -65,7 +73,7 @@ def publish(report_id: str, event_type: str, message: str = "", **extra) -> None
         client.publish(_channel(report_id), payload)
         # Also append to a persistent list so the poll endpoint can catch up
         # even when the SSE stream has dropped.
-        list_key = f"auditforge:report:{report_id}:event_log"
+        list_key = f"arthvion:report:{report_id}:event_log"
         client.rpush(list_key, payload)
         client.expire(list_key, 3600)   # 1-hour TTL — enough for any report run
     except Exception as exc:
@@ -97,9 +105,14 @@ async def subscribe(
         Called once after the subscription is confirmed and once per keepalive.
     """
     from redis.asyncio import Redis
+    from redis.exceptions import TimeoutError as RedisTimeoutError
     from backend.core.config import get_settings
 
-    client: Redis = Redis.from_url(get_settings().redis_url, socket_connect_timeout=3)
+    client: Redis = Redis.from_url(
+        get_settings().redis_url,
+        socket_connect_timeout=3,
+        socket_timeout=30,          # must exceed _KEEPALIVE_INTERVAL
+    )
     pubsub = client.pubsub()
     channel = _channel(report_id)
 
@@ -133,7 +146,7 @@ async def subscribe(
                     listener.__anext__(),
                     timeout=_KEEPALIVE_INTERVAL,
                 )
-            except asyncio.TimeoutError:
+            except (asyncio.TimeoutError, RedisTimeoutError):
                 # No Redis message for _KEEPALIVE_INTERVAL seconds.
                 yield ": keepalive\n\n"
                 # DB fallback: if the task finished but we missed the event,
@@ -175,6 +188,132 @@ async def subscribe(
             except json.JSONDecodeError:
                 pass
 
+    finally:
+        try:
+            await pubsub.unsubscribe(channel)
+        except Exception:
+            pass
+        try:
+            await client.aclose()
+        except Exception:
+            pass
+
+
+# ---------------------------------------------------------------------------
+# Workspace activity & comment channels
+# ---------------------------------------------------------------------------
+
+def publish_workspace(workspace_id: str, event_type: str, summary: str = "", **extra) -> None:
+    """Publish a workspace-level activity event (sync, fire-and-forget)."""
+    try:
+        client = _get_sync_client()
+        payload = json.dumps({
+            "type": event_type,
+            "workspace_id": workspace_id,
+            "summary": summary,
+            "ts": time.time(),
+            **extra,
+        })
+        client.publish(_workspace_channel(workspace_id), payload)
+    except Exception as exc:
+        logger.warning("publish_workspace failed (non-fatal): %s", exc)
+
+
+def publish_comment(target_type: str, target_id: str, event_type: str, **extra) -> None:
+    """Publish a comment event to the target's comment channel (sync, fire-and-forget)."""
+    try:
+        client = _get_sync_client()
+        payload = json.dumps({
+            "type": event_type,
+            "target_type": target_type,
+            "target_id": target_id,
+            "ts": time.time(),
+            **extra,
+        })
+        client.publish(_comment_channel(target_type, target_id), payload)
+    except Exception as exc:
+        logger.warning("publish_comment failed (non-fatal): %s", exc)
+
+
+async def subscribe_workspace(workspace_id: str) -> AsyncIterator[str]:
+    """Async SSE generator for workspace-level activity events."""
+    from redis.asyncio import Redis
+    from redis.exceptions import TimeoutError as RedisTimeoutError
+    from backend.core.config import get_settings
+
+    client: Redis = Redis.from_url(
+        get_settings().redis_url,
+        socket_connect_timeout=3,
+        socket_timeout=30,
+    )
+    pubsub = client.pubsub()
+    channel = _workspace_channel(workspace_id)
+    await pubsub.subscribe(channel)
+
+    try:
+        listener = pubsub.listen()
+        while True:
+            try:
+                message = await asyncio.wait_for(
+                    listener.__anext__(), timeout=_KEEPALIVE_INTERVAL,
+                )
+            except (asyncio.TimeoutError, RedisTimeoutError):
+                yield ": keepalive\n\n"
+                continue
+            except StopAsyncIteration:
+                break
+
+            if message.get("type") != "message":
+                continue
+            data: str = message["data"]
+            if isinstance(data, bytes):
+                data = data.decode()
+            yield f"data: {data}\n\n"
+    finally:
+        try:
+            await pubsub.unsubscribe(channel)
+        except Exception:
+            pass
+        try:
+            await client.aclose()
+        except Exception:
+            pass
+
+
+async def subscribe_comments(target_type: str, target_id: str) -> AsyncIterator[str]:
+    """Async SSE generator for comment events on a report/deal."""
+    from redis.asyncio import Redis
+    from redis.exceptions import TimeoutError as RedisTimeoutError
+    from backend.core.config import get_settings
+
+    client: Redis = Redis.from_url(
+        get_settings().redis_url,
+        socket_connect_timeout=3,
+        socket_timeout=30,
+    )
+    pubsub = client.pubsub()
+    channel = _comment_channel(target_type, target_id)
+    await pubsub.subscribe(channel)
+
+    try:
+        listener = pubsub.listen()
+        while True:
+            try:
+                message = await asyncio.wait_for(
+                    listener.__anext__(), timeout=_KEEPALIVE_INTERVAL,
+                )
+            except (asyncio.TimeoutError, RedisTimeoutError):
+                yield ": keepalive\n\n"
+                continue
+            except StopAsyncIteration:
+                break
+
+            if message.get("type") != "message":
+                continue
+            data: str = message["data"]
+            if isinstance(data, bytes):
+                data = data.decode()
+            yield f"data: {data}\n\n"
     finally:
         try:
             await pubsub.unsubscribe(channel)

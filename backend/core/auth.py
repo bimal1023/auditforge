@@ -5,26 +5,28 @@ import hashlib
 from datetime import datetime, timedelta, timezone
 from uuid import UUID
 
+import bcrypt
 from fastapi import Depends, HTTPException, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from jose import JWTError, jwt
-from passlib.context import CryptContext
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.core.config import get_settings
 from backend.core.database import get_session
 from backend.models.db import User
 
-_pwd = CryptContext(schemes=["bcrypt"], deprecated="auto")
 _bearer = HTTPBearer()
 
 
 def hash_password(plain: str) -> str:
-    return _pwd.hash(plain)
+    return bcrypt.hashpw(plain.encode("utf-8"), bcrypt.gensalt()).decode("utf-8")
 
 
 def verify_password(plain: str, hashed: str) -> bool:
-    return _pwd.verify(plain, hashed)
+    try:
+        return bcrypt.checkpw(plain.encode("utf-8"), hashed.encode("utf-8"))
+    except Exception:
+        return False
 
 
 def create_access_token(user_id: UUID) -> str:
@@ -39,9 +41,68 @@ def create_access_token(user_id: UUID) -> str:
     )
 
 
+def create_password_reset_token(user_id: UUID) -> str:
+    """Short-lived JWT used only to authorise a password reset.
+
+    Includes `purpose: "password_reset"` so a regular access token can't be
+    reused on the reset endpoint (and vice-versa). Default TTL is 15 minutes.
+    """
+    settings = get_settings()
+    expire = datetime.now(timezone.utc) + timedelta(
+        minutes=settings.password_reset_token_minutes
+    )
+    return jwt.encode(
+        {"sub": str(user_id), "exp": expire, "purpose": "password_reset"},
+        settings.secret_key,
+        algorithm="HS256",
+    )
+
+
+def verify_password_reset_token(token: str) -> UUID:
+    """Return the user UUID encoded in a valid reset token, else raise 400."""
+    try:
+        payload = jwt.decode(token, get_settings().secret_key, algorithms=["HS256"])
+        if payload.get("purpose") != "password_reset":
+            raise HTTPException(status_code=400, detail="Invalid reset token")
+        return UUID(payload["sub"])
+    except (JWTError, KeyError, ValueError):
+        raise HTTPException(status_code=400, detail="Reset link is invalid or has expired")
+
+
+def create_email_verification_token(user_id: UUID) -> str:
+    """Long-lived JWT used to verify ownership of the registered email.
+
+    24-hour TTL because users don't always open their email immediately, and
+    locking them out of their own account because verification expired in 15
+    minutes would be terrible UX. Includes `purpose: "email_verification"` so
+    it can't be reused on other endpoints.
+    """
+    settings = get_settings()
+    expire = datetime.now(timezone.utc) + timedelta(hours=24)
+    return jwt.encode(
+        {"sub": str(user_id), "exp": expire, "purpose": "email_verification"},
+        settings.secret_key,
+        algorithm="HS256",
+    )
+
+
+def verify_email_verification_token(token: str) -> UUID:
+    """Return the user UUID encoded in a valid verification token, else raise 400."""
+    try:
+        payload = jwt.decode(token, get_settings().secret_key, algorithms=["HS256"])
+        if payload.get("purpose") != "email_verification":
+            raise HTTPException(status_code=400, detail="Invalid verification token")
+        return UUID(payload["sub"])
+    except (JWTError, KeyError, ValueError):
+        raise HTTPException(
+            status_code=400,
+            detail="Verification link is invalid or has expired. Request a new one.",
+        )
+
+
 def _token_blacklist_key(token: str) -> str:
     """Store a short hash of the token to avoid keeping full tokens in Redis."""
-    return "auditforge:blacklist:" + hashlib.sha256(token.encode()).hexdigest()
+    return "arthvion:blacklist:" + hashlib.sha256(token.encode()).hexdigest()
 
 
 def blacklist_token(token: str) -> None:
@@ -67,7 +128,11 @@ def _is_token_blacklisted(token: str) -> bool:
         client.close()
         return bool(result)
     except Exception:
-        return False  # Redis unavailable → allow the request
+        import logging
+        logging.getLogger(__name__).warning(
+            "Redis unreachable during token blacklist check — failing closed"
+        )
+        return True  # Redis unavailable → reject the request (fail closed)
 
 
 def _decode_token(token: str) -> UUID:

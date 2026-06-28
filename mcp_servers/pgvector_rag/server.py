@@ -16,6 +16,12 @@ Run standalone:
 """
 from __future__ import annotations
 
+# Prevent transformers from importing tensorflow — the protobuf version
+# conflict between tf 5.28.x and the system protobuf 6.x causes a segfault.
+import os as _os
+_os.environ.setdefault("USE_TF", "0")
+_os.environ.setdefault("TRANSFORMERS_NO_TF", "1")
+
 import hashlib
 import json
 import os
@@ -28,37 +34,65 @@ mcp = FastMCP("pgvector-rag")
 
 DATABASE_URL = os.environ.get(
     "DATABASE_URL",
-    "postgresql://postgres:postgres@localhost:5432/auditforge",
+    "postgresql://postgres:postgres@localhost:5432/arthvion",
 ).replace("postgresql+asyncpg://", "postgresql://")  # asyncpg uses plain scheme
 
 EMBEDDING_DIM = 384
-CHUNK_SIZE = 500      # characters
-CHUNK_OVERLAP = 50    # characters
+CHUNK_SIZE = 1200     # characters — larger chunks preserve tables and context
+CHUNK_OVERLAP = 150   # characters — overlap keeps cross-boundary info intact
 
-_embedder = None  # lazy-loaded so server starts fast
+_tokenizer = None
+_model = None
 
 
-def _get_embedder():
-    global _embedder
-    if _embedder is None:
-        try:
-            from sentence_transformers import SentenceTransformer
-        except ImportError:
-            raise RuntimeError(
-                "sentence-transformers is not installed — run: "
-                "pip install sentence-transformers"
-            )
-        _embedder = SentenceTransformer("all-MiniLM-L6-v2")
-    return _embedder
+def _load_model():
+    """Lazy-load using transformers + torch directly.
+
+    Avoids importing sentence-transformers which drags in a tensorflow
+    dependency whose protobuf version can conflict with the system install
+    and cause a subprocess segfault (exit code 139).
+    """
+    global _tokenizer, _model
+    if _model is None:
+        import torch
+        from transformers import AutoTokenizer, AutoModel
+
+        model_name = "sentence-transformers/all-MiniLM-L6-v2"
+        _tokenizer = AutoTokenizer.from_pretrained(model_name)
+        _model = AutoModel.from_pretrained(model_name)
+        _model.eval()
+    return _tokenizer, _model
 
 
 def _embed(texts: list[str]) -> list[list[float]]:
-    model = _get_embedder()
-    vectors = model.encode(texts, normalize_embeddings=True)
-    return vectors.tolist()
+    import torch
+
+    tokenizer, model = _load_model()
+    encoded = tokenizer(
+        texts, padding=True, truncation=True, max_length=256, return_tensors="pt"
+    )
+    with torch.no_grad():
+        output = model(**encoded)
+    # Mean pooling over token embeddings, respecting the attention mask
+    mask = encoded["attention_mask"].unsqueeze(-1).float()
+    summed = (output.last_hidden_state * mask).sum(dim=1)
+    counts = mask.sum(dim=1).clamp(min=1e-9)
+    embeddings = summed / counts
+    # L2 normalize
+    embeddings = torch.nn.functional.normalize(embeddings, p=2, dim=1)
+    return embeddings.tolist()
+
+
+def _sanitize(text: str) -> str:
+    """Strip control characters that break JSON serialization (form feeds,
+    null bytes, etc.) while preserving normal whitespace."""
+    import re
+    # Remove all C0/C1 control chars except \n \r \t
+    return re.sub(r'[\x00-\x08\x0b\x0c\x0e-\x1f\x7f-\x9f]', '', text)
 
 
 def _chunk_text(text: str) -> list[str]:
+    text = _sanitize(text)
     chunks: list[str] = []
     start = 0
     while start < len(text):
@@ -85,11 +119,16 @@ async def _ensure_table(conn: asyncpg.Connection) -> None:
             created_at  TIMESTAMPTZ DEFAULT NOW()
         )
     """)
+    # Drop the old IVFFlat index — it requires many rows (>> lists count)
+    # to work correctly. With fewer rows than lists, probes return 0 results.
+    await conn.execute(
+        "DROP INDEX IF EXISTS document_chunks_embedding_idx"
+    )
+    # HNSW works correctly at any table size and doesn't need training data.
     await conn.execute("""
-        CREATE INDEX IF NOT EXISTS document_chunks_embedding_idx
+        CREATE INDEX IF NOT EXISTS document_chunks_embedding_hnsw_idx
         ON document_chunks
-        USING ivfflat (embedding vector_cosine_ops)
-        WITH (lists = 100)
+        USING hnsw (embedding vector_cosine_ops)
     """)
 
 
@@ -161,25 +200,50 @@ async def similarity_search(query: str, top_k: int = 5) -> dict:
 
     Returns:
         results : list of {text, source, score, metadata}
+
+    Security note:
+        If the WORKSPACE_SCOPE environment variable is set (injected by the
+        agent pipeline as a subprocess env var), results are HARD-filtered to
+        chunks whose metadata.workspace_id matches that value. This is a
+        server-side guarantee the calling LLM cannot override or escape, which
+        prevents one firm's uploaded documents from leaking into another's
+        report. When unset (e.g. local debugging), no filter is applied.
     """
     top_k = max(1, min(20, top_k))
     query_vec = _embed([query])[0]
     vec_str = "[" + ",".join(str(v) for v in query_vec) + "]"
 
+    workspace_scope = os.environ.get("WORKSPACE_SCOPE")
+
     conn = await _get_conn()
     try:
         await _ensure_table(conn)
-        rows = await conn.fetch(
-            f"""
-            SELECT text, source, metadata,
-                   1 - (embedding <=> $1::vector) AS score
-            FROM document_chunks
-            ORDER BY embedding <=> $1::vector
-            LIMIT $2
-            """,
-            vec_str,
-            top_k,
-        )
+        if workspace_scope:
+            rows = await conn.fetch(
+                """
+                SELECT text, source, metadata,
+                       1 - (embedding <=> $1::vector) AS score
+                FROM document_chunks
+                WHERE metadata->>'workspace_id' = $3
+                ORDER BY embedding <=> $1::vector
+                LIMIT $2
+                """,
+                vec_str,
+                top_k,
+                workspace_scope,
+            )
+        else:
+            rows = await conn.fetch(
+                """
+                SELECT text, source, metadata,
+                       1 - (embedding <=> $1::vector) AS score
+                FROM document_chunks
+                ORDER BY embedding <=> $1::vector
+                LIMIT $2
+                """,
+                vec_str,
+                top_k,
+            )
     finally:
         await conn.close()
 
@@ -187,7 +251,7 @@ async def similarity_search(query: str, top_k: int = 5) -> dict:
         "query": query,
         "results": [
             {
-                "text": r["text"],
+                "text": _sanitize(r["text"]),
                 "source": r["source"],
                 "score": float(r["score"]),
                 "metadata": json.loads(r["metadata"]) if r["metadata"] else {},
@@ -195,6 +259,29 @@ async def similarity_search(query: str, top_k: int = 5) -> dict:
             for r in rows
         ],
     }
+
+
+@mcp.tool()
+async def delete_by_source(source: str) -> dict:
+    """
+    Delete all chunks that match the given *source* label.
+
+    Args:
+        source : the exact source string used at ingest time
+
+    Returns:
+        deleted : number of rows removed
+    """
+    conn = await _get_conn()
+    try:
+        result = await conn.execute(
+            "DELETE FROM document_chunks WHERE source = $1", source
+        )
+        # result is "DELETE <n>"
+        count = int(result.split()[-1])
+    finally:
+        await conn.close()
+    return {"deleted": count, "source": source}
 
 
 if __name__ == "__main__":

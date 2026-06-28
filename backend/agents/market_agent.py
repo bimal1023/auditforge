@@ -23,15 +23,17 @@ from backend.hooks.output_validation import OutputValidationHook
 from backend.hooks.policy_enforcement import PolicyEnforcementHook
 from backend.models.report import Citation, Competitor, MarketSection
 
-from ._mcp_client import MCPClient
+from ._rag import agent_mcp, rag_hint, visible_tools
 
 logger = logging.getLogger(__name__)
 
 SYSTEM_PROMPT = """\
-You are the Market Analysis Agent for AuditForge, a PE due diligence platform.
+You are the Market Analysis Agent for Arthvion, a PE due diligence platform.
 
 ## Tools available
-  - search_web(query, max_results, days_back) → web search results
+  - search_web(query, max_results, days_back)         → web search results
+  - search_economic_series(query, limit)              → find FRED macro series IDs
+  - get_series_observations(series_id, limit)         → recent values for a FRED series
 
 ## Process
 Run focused web searches to answer these questions:
@@ -40,6 +42,14 @@ Run focused web searches to answer these questions:
   2. Who are the top 3–5 competitors and what are their estimated market shares?
   3. What are the main growth drivers (tailwinds) over the next 3–5 years?
   4. What are the main headwinds (threats, substitutes, regulatory pressure)?
+
+Then GROUND your demand/tailwind/headwind assessment in real macro data from
+FRED. Use search_economic_series to find an indicator relevant to the company's
+sector (e.g. "retail sales", "semiconductor production", "30-year mortgage
+rate", "real GDP", "industrial production", "CPI"), then get_series_observations
+to read its recent trend. Cite the FRED series in your reasoning — this turns a
+qualitative guess into an evidence-backed signal. If FRED is unavailable (its
+tools return an "error"), proceed with web data only.
 
 Suggested queries:
   - "<company> total addressable market size <year>"
@@ -66,7 +76,7 @@ Rules: market_size_usd must be a raw float (1_200_000_000.0, not "1.2B");
 citations must be non-empty.
 """
 
-MAX_ITERATIONS = 12
+MAX_ITERATIONS = 8    # safety cap — most runs converge in 2-4
 
 
 class MarketAgent:
@@ -86,6 +96,7 @@ class MarketAgent:
         company: str,
         ticker: str | None = None,
         context: str | None = None,
+        workspace_id: str | None = None,
     ) -> MarketSection:
         ctx = HookContext(
             agent="market_agent",
@@ -101,15 +112,21 @@ class MarketAgent:
         if norm.get("context"):
             user_msg += f"\n\n<analyst_context>\n{norm['context']}\n</analyst_context>"
 
-        messages: list[dict[str, Any]] = [{"role": "user", "content": user_msg}]
         final_text = ""
 
         settings = get_settings()
-        async with MCPClient(
-            settings.web_search_mcp_script,
-            extra_env={"TAVILY_API_KEY": settings.tavily_api_key},
-        ) as mcp:
-            tools = mcp.anthropic_tools()
+        async with agent_mcp(
+            [settings.web_search_mcp_script, settings.fred_mcp_script],
+            {
+                "TAVILY_API_KEY": settings.tavily_api_key,
+                "FRED_API_KEY": settings.fred_api_key,
+            },
+            workspace_id=workspace_id,
+            settings=settings,
+        ) as (mcp, rag_on):
+            user_msg += rag_hint(rag_on)
+            messages: list[dict[str, Any]] = [{"role": "user", "content": user_msg}]
+            tools = visible_tools(mcp, rag_on)
 
             for _ in range(MAX_ITERATIONS):
                 response = await self._client.messages.create(

@@ -24,12 +24,12 @@ from backend.hooks.output_validation import OutputValidationHook
 from backend.hooks.policy_enforcement import PolicyEnforcementHook
 from backend.models.report import Citation, RiskFactor, RiskSection
 
-from ._mcp_client import MultiMCPClient
+from ._rag import agent_mcp, rag_hint, visible_tools
 
 logger = logging.getLogger(__name__)
 
 SYSTEM_PROMPT = """\
-You are the Risk Analysis Agent for AuditForge, a PE due diligence platform.
+You are the Risk Analysis Agent for Arthvion, a PE due diligence platform.
 
 ## Tools available
   - search_company(name)                              → find CIK
@@ -75,7 +75,7 @@ You are the Risk Analysis Agent for AuditForge, a PE due diligence platform.
 Rules: never fabricate risks; every risk must have a citation; citations list must be non-empty.
 """
 
-MAX_ITERATIONS = 14
+MAX_ITERATIONS = 8    # safety cap — most runs converge in 3-5
 
 
 class RiskAgent:
@@ -95,6 +95,7 @@ class RiskAgent:
         company: str,
         ticker: str | None = None,
         context: str | None = None,
+        workspace_id: str | None = None,
     ) -> RiskSection:
         ctx = HookContext(
             agent="risk_agent",
@@ -110,19 +111,21 @@ class RiskAgent:
         if norm.get("context"):
             user_msg += f"\n\n<analyst_context>\n{norm['context']}\n</analyst_context>"
 
-        messages: list[dict[str, Any]] = [{"role": "user", "content": user_msg}]
         final_text = ""
 
         settings = get_settings()
-        async with MultiMCPClient(
-            settings.sec_edgar_mcp_script,
-            settings.web_search_mcp_script,
-            extra_env={
+        async with agent_mcp(
+            [settings.sec_edgar_mcp_script, settings.web_search_mcp_script],
+            {
                 "SEC_EDGAR_USER_AGENT": settings.sec_edgar_user_agent,
                 "TAVILY_API_KEY": settings.tavily_api_key,
             },
-        ) as mcp:
-            tools = mcp.anthropic_tools()
+            workspace_id=workspace_id,
+            settings=settings,
+        ) as (mcp, rag_on):
+            user_msg += rag_hint(rag_on)
+            messages: list[dict[str, Any]] = [{"role": "user", "content": user_msg}]
+            tools = visible_tools(mcp, rag_on)
 
             for _ in range(MAX_ITERATIONS):
                 response = await self._client.messages.create(
